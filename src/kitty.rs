@@ -1,7 +1,12 @@
 use std::ffi::{CStr, CString};
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 use std::{process, ptr, slice};
+
+use crate::store;
 
 const PLACEHOLDER: char = '\u{10EEEE}';
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -17,6 +22,7 @@ const DIACRITICS: [char; 64] = [
 ];
 
 pub const MAX_GRID: i64 = DIACRITICS.len() as i64;
+const NAMESPACES: u32 = DIACRITICS.len() as u32;
 const FRAME_MARKER_ID: u8 = 1;
 
 pub struct Image<'a> {
@@ -28,9 +34,37 @@ pub struct Image<'a> {
     pub name: &'a CStr,
 }
 
+pub struct Namespace {
+    id: u32,
+    _lock: Option<File>,
+}
+
+impl Namespace {
+    pub fn claim() -> Namespace {
+        store::dir("namespaces")
+            .and_then(|dir| Namespace::claim_in(&dir))
+            .unwrap_or(Namespace { id: process::id() % NAMESPACES, _lock: None })
+    }
+
+    fn claim_in(dir: &Path) -> Option<Namespace> {
+        (0..NAMESPACES).find_map(|id| {
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .mode(0o600)
+                .open(dir.join(id.to_string()))
+                .ok()?;
+            file.try_lock().ok()?;
+            Some(Namespace { id, _lock: Some(file) })
+        })
+    }
+}
+
 pub struct Graphics {
     tmux: bool,
     serial: u32,
+    namespace: Namespace,
 }
 
 pub struct Shared {
@@ -40,8 +74,23 @@ pub struct Shared {
 }
 
 impl Graphics {
-    pub fn new(tmux: bool) -> Graphics {
-        Graphics { tmux, serial: 0 }
+    pub fn new(tmux: bool, namespace: Namespace) -> Graphics {
+        Graphics { tmux, serial: 0, namespace }
+    }
+
+    fn image_id(&self, id: u8) -> u32 {
+        self.namespace.id << 24 | id as u32
+    }
+
+    pub fn cell(&self, out: &mut Vec<u8>, row: i64, col: i64) {
+        let mut buffer = [0u8; 4];
+        for character in [PLACEHOLDER, DIACRITICS[row as usize], DIACRITICS[col as usize]] {
+            out.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+        }
+        if self.namespace.id > 0 {
+            let high = DIACRITICS[self.namespace.id as usize];
+            out.extend_from_slice(high.encode_utf8(&mut buffer).as_bytes());
+        }
     }
 
     pub fn shared(&mut self, len: usize) -> io::Result<Shared> {
@@ -56,7 +105,12 @@ impl Graphics {
         write!(
             command,
             "\x1b_Ga=T,U=1,q=2,f=24,t=s,i={},s={},v={},c={},r={},S={};",
-            image.id, image.width, image.height, image.cols, image.rows, bytes
+            self.image_id(image.id),
+            image.width,
+            image.height,
+            image.cols,
+            image.rows,
+            bytes
         )
         .expect("writing to a Vec cannot fail");
         base64(&mut command, image.name.to_bytes());
@@ -66,7 +120,8 @@ impl Graphics {
 
     pub fn frame_marker(&mut self, out: &mut Vec<u8>) -> Option<CString> {
         let name = self.shared(3).ok()?.into_name();
-        let mut command = format!("\x1b_Ga=t,q=2,f=24,t=s,i={FRAME_MARKER_ID},s=1,v=1,S=3;").into_bytes();
+        let id = self.image_id(FRAME_MARKER_ID);
+        let mut command = format!("\x1b_Ga=t,q=2,f=24,t=s,i={id},s=1,v=1,S=3;").into_bytes();
         base64(&mut command, name.to_bytes());
         command.extend_from_slice(b"\x1b\\");
         self.send(out, &command);
@@ -78,7 +133,7 @@ impl Graphics {
     }
 
     pub fn delete(&self, out: &mut Vec<u8>, id: u8) {
-        let command = format!("\x1b_Ga=d,d=I,q=2,i={id}\x1b\\");
+        let command = format!("\x1b_Ga=d,d=I,q=2,i={}\x1b\\", self.image_id(id));
         self.send(out, command.as_bytes());
     }
 
@@ -168,13 +223,6 @@ pub fn unlink(name: &CStr) {
     }
 }
 
-pub fn cell(out: &mut Vec<u8>, row: i64, col: i64) {
-    let mut buffer = [0u8; 4];
-    for character in [PLACEHOLDER, DIACRITICS[row as usize], DIACRITICS[col as usize]] {
-        out.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
-    }
-}
-
 fn base64(out: &mut Vec<u8>, data: &[u8]) {
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as usize;
@@ -190,6 +238,11 @@ fn base64(out: &mut Vec<u8>, data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    fn graphics(tmux: bool, namespace: u32) -> Graphics {
+        Graphics::new(tmux, Namespace { id: namespace, _lock: None })
+    }
 
     fn encoded(data: &[u8]) -> String {
         let mut out = Vec::new();
@@ -208,16 +261,42 @@ mod tests {
     #[test]
     fn cell_is_placeholder_then_row_then_column() {
         let mut out = Vec::new();
-        cell(&mut out, 0, 1);
+        graphics(false, 0).cell(&mut out, 0, 1);
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text.chars().collect::<Vec<_>>(), ['\u{10EEEE}', '\u{0305}', '\u{030D}']);
     }
 
     #[test]
-    fn tmux_passthrough_doubles_every_escape() {
-        let graphics = Graphics::new(true);
+    fn a_later_namespace_adds_the_high_byte_to_each_cell() {
         let mut out = Vec::new();
-        graphics.delete(&mut out, 16);
+        graphics(false, 2).cell(&mut out, 0, 1);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.chars().collect::<Vec<_>>(), ['\u{10EEEE}', '\u{0305}', '\u{030D}', '\u{030E}']);
+    }
+
+    #[test]
+    fn the_namespace_is_the_high_byte_of_every_image_id() {
+        let mut out = Vec::new();
+        graphics(false, 2).delete(&mut out, 16);
+        assert_eq!(out, format!("\x1b_Ga=d,d=I,q=2,i={}\x1b\\", 2 << 24 | 16).as_bytes());
+    }
+
+    #[test]
+    fn two_readers_never_hold_the_same_namespace() {
+        let dir = Path::new(env!("OUT_DIR")).join("namespaces-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let first = Namespace::claim_in(&dir).unwrap();
+        let second = Namespace::claim_in(&dir).unwrap();
+        assert_eq!((first.id, second.id), (0, 1));
+        drop(first);
+        assert_eq!(Namespace::claim_in(&dir).unwrap().id, 0);
+    }
+
+    #[test]
+    fn tmux_passthrough_doubles_every_escape() {
+        let mut out = Vec::new();
+        graphics(true, 0).delete(&mut out, 16);
         let expected = b"\x1bPtmux;\x1b\x1b_Ga=d,d=I,q=2,i=16\x1b\x1b\\\x1b\\";
         assert_eq!(out, expected);
     }
@@ -225,19 +304,18 @@ mod tests {
     #[test]
     fn prevent_discard_is_an_empty_passthrough_only_in_tmux() {
         let mut out = Vec::new();
-        Graphics::new(true).prevent_discard(&mut out);
+        graphics(true, 0).prevent_discard(&mut out);
         assert_eq!(out, b"\x1bPtmux;\x1b\\");
 
         let mut out = Vec::new();
-        Graphics::new(false).prevent_discard(&mut out);
+        graphics(false, 0).prevent_discard(&mut out);
         assert!(out.is_empty());
     }
 
     #[test]
     fn plain_terminal_gets_the_command_unwrapped() {
-        let graphics = Graphics::new(false);
         let mut out = Vec::new();
-        graphics.delete(&mut out, 16);
+        graphics(false, 0).delete(&mut out, 16);
         assert_eq!(out, b"\x1b_Ga=d,d=I,q=2,i=16\x1b\\");
     }
 }

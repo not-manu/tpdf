@@ -10,7 +10,7 @@ use crate::context::{self, Publisher, Region, State};
 use crate::index::Index;
 use crate::input::{self, Key};
 use crate::jumps::{Jumps, Place};
-use crate::kitty::{self, Graphics, Image};
+use crate::kitty::{self, Graphics, Image, Namespace};
 use crate::layout::{Layout, TILE_COLS, TILE_ROWS};
 use crate::pdf::{self, Doc};
 use crate::position::{Fit, Position, Positions};
@@ -197,7 +197,7 @@ impl App {
             scroll_row: 0,
             scroll_col: 0,
             dark: Preferences::load().dark,
-            graphics: Graphics::new(tmux),
+            graphics: Graphics::new(tmux, Namespace::claim()),
             tiles: HashMap::new(),
             free_ids: (FIRST_IMAGE_ID..=u8::MAX).rev().collect(),
             image_bytes: 0,
@@ -949,7 +949,7 @@ impl App {
                 }
             }
             if image.is_some() {
-                kitty::cell(&mut row, inner_row, col % TILE_COLS);
+                self.graphics.cell(&mut row, inner_row, col % TILE_COLS);
             } else {
                 row.push(b' ');
             }

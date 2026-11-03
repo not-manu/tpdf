@@ -1,5 +1,6 @@
 mod app;
 mod context;
+mod index;
 mod input;
 mod jumps;
 mod kitty;
@@ -114,6 +115,7 @@ fn main() -> ExitCode {
     let result = match args.as_slice() {
         [command, rest @ ..] if command == "context" => run_context(rest),
         [flag, path] if flag == "--bench" => bench(Path::new(path)),
+        [flag, path] if flag == index::INDEX_FLAG => index::write(Path::new(path)),
         [path] => view(PathBuf::from(path), None),
         [path, target] => match target.to_str() {
             Some(target) => view(PathBuf::from(path), Some(target)),

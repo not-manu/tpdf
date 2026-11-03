@@ -46,6 +46,8 @@ unsafe extern "C" {
     ) -> c_int;
     fn tpdf_text(handle: *mut Handle, index: c_int, x0: f32, y0: f32, x1: f32, y1: f32) -> *mut c_char;
     fn tpdf_free_text(handle: *mut Handle, text: *mut c_char);
+    fn tpdf_fold(handle: *mut Handle, text: *const c_char) -> *mut c_char;
+    fn tpdf_folded_page(handle: *mut Handle, index: c_int) -> *mut c_char;
     fn tpdf_save_png(
         handle: *mut Handle,
         path: *const c_char,
@@ -123,16 +125,32 @@ impl Doc {
         ok != 0
     }
 
-    pub fn text(&self, index: usize, area: [f32; 4]) -> String {
+    fn take_text(&self, raw: *mut c_char) -> String {
+        if raw.is_null() {
+            return String::new();
+        }
         unsafe {
-            let raw = tpdf_text(self.handle, index as c_int, area[0], area[1], area[2], area[3]);
-            if raw.is_null() {
-                return String::new();
-            }
             let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
             tpdf_free_text(self.handle, raw);
             text
         }
+    }
+
+    pub fn text(&self, index: usize, area: [f32; 4]) -> String {
+        self.take_text(unsafe {
+            tpdf_text(self.handle, index as c_int, area[0], area[1], area[2], area[3])
+        })
+    }
+
+    pub fn fold(&self, text: &str) -> String {
+        let Ok(c_text) = CString::new(text) else {
+            return String::new();
+        };
+        self.take_text(unsafe { tpdf_fold(self.handle, c_text.as_ptr()) })
+    }
+
+    pub fn folded_page(&self, index: usize) -> String {
+        self.take_text(unsafe { tpdf_folded_page(self.handle, index as c_int) })
     }
 
     pub fn save_png(&self, path: &Path, width: usize, height: usize, rgb: &mut [u8]) -> bool {
@@ -216,5 +234,54 @@ mod tests {
     fn without_labels_p_counts_from_one() {
         let doc = open("plain.pdf", "");
         assert_eq!(doc.find_page("p3"), Some(2));
+    }
+
+    fn open_text(name: &str, content: &str) -> Doc {
+        let page = "<</Type/Page/Parent 2 0 R/MediaBox[0 0 400 400]/Contents 4 0 R/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>>>>>";
+        let length = content.len();
+        let pdf = format!(
+            "%PDF-1.7\n1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n2 0 obj\n<</Type/Pages/Count 1/Kids[3 0 R]>>\nendobj\n3 0 obj\n{page}\nendobj\n4 0 obj\n<</Length {length}>>\nstream\n{content}\nendstream\nendobj\ntrailer\n<</Root 1 0 R>>\n"
+        );
+        let path = Path::new(env!("OUT_DIR")).join(name);
+        fs::write(&path, pdf).unwrap();
+        Doc::open(&path).unwrap()
+    }
+
+    #[test]
+    fn folding_ignores_case_spacing_hyphens_and_accents() {
+        let doc = open("fold.pdf", "");
+        assert_eq!(doc.fold("Well-Known  Fact"), "WELLKNOWNFACT");
+        assert_eq!(doc.fold("caf\u{e9}"), "CAFE");
+        assert_eq!(doc.fold("cafe\u{301}"), "CAFE");
+    }
+
+    #[test]
+    fn folding_applies_compatibility_forms_like_mupdf_search_does() {
+        let doc = open("fold-compat.pdf", "");
+        assert_eq!(doc.fold("\u{fb01}nd"), "FIND");
+        assert_eq!(doc.fold("\u{211d}"), "R");
+        assert_eq!(doc.fold("\u{1d453}"), "F");
+        assert_eq!(doc.fold("x\u{b2}"), "X2");
+    }
+
+    #[test]
+    fn a_word_split_across_lines_is_found_by_search_and_by_the_folded_page() {
+        let doc = open_text(
+            "split.pdf",
+            "BT /F1 12 Tf 20 300 Td (a para-) Tj 0 -14 Td (graph of Text) Tj ET",
+        );
+        let folded = doc.folded_page(0);
+        for needle in ["paragraph", "PARAGRAPH", "graph of", "of  text"] {
+            assert!(!doc.search(0, needle).is_empty(), "search missed {needle}");
+            assert!(folded.contains(&doc.fold(needle)), "index missed {needle}");
+        }
+        assert!(doc.search(0, "absent").is_empty());
+        assert!(!folded.contains(&doc.fold("absent")));
+    }
+
+    #[test]
+    fn a_page_that_does_not_exist_folds_to_nothing() {
+        let doc = open("fold-missing.pdf", "");
+        assert_eq!(doc.folded_page(99), "");
     }
 }

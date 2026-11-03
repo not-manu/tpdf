@@ -1,9 +1,11 @@
 #include <mupdf/fitz.h>
+#include <mupdf/ucdn.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #define CACHED_LISTS 6
 #define MAX_HITS 128
+#define MAX_DECOMPOSED 18
 
 typedef struct {
     int page;
@@ -222,6 +224,75 @@ char *tpdf_text(tpdf *t, int index, float x0, float y0, float x1, float y1)
 void tpdf_free_text(tpdf *t, char *text)
 {
     fz_free(t->ctx, text);
+}
+
+static void fold_rune(fz_context *ctx, fz_buffer *out, int rune)
+{
+    uint32_t parts[MAX_DECOMPOSED];
+    int count = ucdn_compat_decompose(rune, parts);
+    if (count > 0) {
+        for (int i = 0; i < count; i++)
+            fold_rune(ctx, out, parts[i]);
+        return;
+    }
+    if (fz_is_unicode_whitespace(rune) || fz_is_unicode_hyphen(rune))
+        return;
+    rune = fz_toupper(rune);
+    if (ucdn_get_combining_class(rune) == 0)
+        fz_append_rune(ctx, out, rune);
+}
+
+static char *fold_text(fz_context *ctx, const char *text)
+{
+    fz_buffer *out = fz_new_buffer(ctx, strlen(text) + 1);
+    char *folded = NULL;
+    fz_var(folded);
+    fz_try(ctx) {
+        while (*text) {
+            int rune;
+            text += fz_chartorune(&rune, text);
+            fold_rune(ctx, out, rune);
+        }
+        fz_terminate_buffer(ctx, out);
+        (void)fz_buffer_extract(ctx, out, (unsigned char **)&folded);
+    }
+    fz_always(ctx)
+        fz_drop_buffer(ctx, out);
+    fz_catch(ctx)
+        fz_rethrow(ctx);
+    return folded;
+}
+
+char *tpdf_fold(tpdf *t, const char *text)
+{
+    fz_context *ctx = t->ctx;
+    char *folded = NULL;
+    fz_var(folded);
+    fz_try(ctx)
+        folded = fold_text(ctx, text);
+    fz_catch(ctx)
+        fz_ignore_error(ctx);
+    return folded;
+}
+
+char *tpdf_folded_page(tpdf *t, int index)
+{
+    fz_context *ctx = t->ctx;
+    fz_buffer *flat = NULL;
+    char *folded = NULL;
+    fz_var(flat);
+    fz_var(folded);
+    fz_try(ctx) {
+        fz_stext_options options = { 0 };
+        options.flags = FZ_STEXT_DEHYPHENATE;
+        flat = fz_new_buffer_from_flattened_page_number(ctx, t->doc, index, &options, FZ_TEXT_FLATTEN_ALL);
+        folded = fold_text(ctx, fz_string_from_buffer(ctx, flat));
+    }
+    fz_always(ctx)
+        fz_drop_buffer(ctx, flat);
+    fz_catch(ctx)
+        fz_ignore_error(ctx);
+    return folded;
 }
 
 int tpdf_save_png(tpdf *t, const char *path, int width, int height, unsigned char *rgb)

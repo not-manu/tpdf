@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::context::{self, Publisher, Region, State};
+use crate::index::Index;
 use crate::input::{self, Key};
 use crate::jumps::{Jumps, Place};
 use crate::kitty::{self, Graphics, Image};
@@ -37,7 +38,13 @@ type TileKey = (usize, i64, i64);
 enum Mode {
     Normal,
     Command(String),
-    Search { text: String, forward: bool },
+    Search {
+        text: String,
+        forward: bool,
+        origin: Place,
+        page: usize,
+        previous: String,
+    },
 }
 
 struct Tile {
@@ -51,11 +58,15 @@ struct SearchJob {
     page: usize,
     remaining: usize,
     forward: bool,
+    folded: String,
+    started: Instant,
+    origin: Option<Place>,
 }
 
 pub struct App {
     path: PathBuf,
     doc: Doc,
+    index: Index,
     modified: Option<SystemTime>,
     sizes: Vec<(f32, f32)>,
     size: Size,
@@ -172,6 +183,7 @@ impl App {
             jumps: Jumps::default(),
             frame_in_flight: None,
             modified: modified(&path),
+            index: Index::build(&path, sizes.len()),
             path,
             doc,
             sizes,
@@ -299,6 +311,8 @@ impl App {
             }
             if term::readable(0) {
                 self.read_keys(&mut buffer);
+            } else if self.search_just_started() {
+                self.search_step();
             } else if !self.terminal_caught_up() {
                 term::readable(TERMINAL_POLL_MS);
             } else if self.dirty {
@@ -319,6 +333,7 @@ impl App {
             } else if term::readable(RELOAD_INTERVAL.as_millis() as i32) {
                 self.read_keys(&mut buffer);
             } else if last_check.elapsed() >= RELOAD_INTERVAL {
+                self.index.receive();
                 self.reload_if_changed();
                 self.recover_discarded_images();
                 last_check = Instant::now();
@@ -429,25 +444,75 @@ impl App {
             Mode::Normal => return,
         };
         match key {
-            Key::Char(character) => text.push(character),
-            Key::Ctrl('u') => text.clear(),
+            Key::Char(character) => {
+                text.push(character);
+                self.preview_search();
+            }
+            Key::Ctrl('u') => {
+                text.clear();
+                self.preview_search();
+            }
             Key::Backspace => {
-                if text.pop().is_none() {
-                    self.mode = Mode::Normal;
+                if text.pop().is_some() {
+                    self.preview_search();
+                } else {
+                    self.cancel_prompt();
                 }
             }
-            Key::Esc | Key::Ctrl('c') => self.mode = Mode::Normal,
-            Key::Enter => match std::mem::replace(&mut self.mode, Mode::Normal) {
-                Mode::Command(text) => self.run_command(text.trim()),
-                Mode::Search { text, forward } => {
-                    if !text.is_empty() {
-                        self.needle = text;
-                        self.start_search(self.current_page(), forward);
-                    }
-                }
-                Mode::Normal => {}
-            },
+            Key::Esc | Key::Ctrl('c') => self.cancel_prompt(),
+            Key::Enter => self.submit_prompt(),
             _ => {}
+        }
+    }
+
+    fn open_search(&mut self, forward: bool) {
+        self.mode = Mode::Search {
+            text: String::new(),
+            forward,
+            origin: self.place(),
+            page: self.current_page(),
+            previous: self.needle.clone(),
+        };
+    }
+
+    fn preview_search(&mut self) {
+        let Mode::Search { text, forward, origin, page, .. } = &self.mode else {
+            return;
+        };
+        let (forward, origin, page) = (*forward, *origin, *page);
+        self.needle = text.clone();
+        if self.needle.is_empty() {
+            self.clear_search();
+            self.message.clear();
+            self.go_to_place(origin);
+        } else {
+            self.start_search(page, forward, Some(origin));
+        }
+    }
+
+    fn cancel_prompt(&mut self) {
+        if let Mode::Search { origin, previous, .. } = std::mem::replace(&mut self.mode, Mode::Normal) {
+            if self.needle != previous {
+                self.clear_search();
+                self.needle = previous;
+            }
+            self.job = None;
+            self.message.clear();
+            self.go_to_place(origin);
+        }
+    }
+
+    fn submit_prompt(&mut self) {
+        match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::Command(text) => self.run_command(text.trim()),
+            Mode::Search { text, origin, previous, .. } => {
+                if text.is_empty() {
+                    self.needle = previous;
+                } else if self.job.is_none() && self.hits_page.is_some() {
+                    self.jumps.record(origin);
+                }
+            }
+            Mode::Normal => {}
         }
     }
 
@@ -537,8 +602,8 @@ impl App {
                 self.clear_tiles();
                 self.repaint();
             }
-            Key::Char('/') => self.mode = Mode::Search { text: String::new(), forward: true },
-            Key::Char('?') => self.mode = Mode::Search { text: String::new(), forward: false },
+            Key::Char('/') => self.open_search(true),
+            Key::Char('?') => self.open_search(false),
             Key::Char(':') => self.mode = Mode::Command(String::new()),
             Key::Char('n') => self.next_hit(true),
             Key::Char('N') => self.next_hit(false),
@@ -686,6 +751,7 @@ impl App {
             self.doc = doc;
             self.modified = current;
             self.sizes = page_sizes(&self.doc);
+            self.index = Index::build(&self.path, self.sizes.len());
             self.hits.clear();
             self.hits_page = None;
             self.job = None;
@@ -911,7 +977,14 @@ impl App {
             .unwrap_or_default();
         let left = match &self.mode {
             Mode::Command(text) => format!(":{text}"),
-            Mode::Search { text, forward } => format!("{}{text}", if *forward { '/' } else { '?' }),
+            Mode::Search { text, forward, .. } => {
+                let missing = !text.is_empty() && self.job.is_none() && self.hits_page.is_none();
+                format!(
+                    "{}{text}{}",
+                    if *forward { '/' } else { '?' },
+                    if missing { "  not found" } else { "" }
+                )
+            }
             Mode::Normal if !self.message.is_empty() => self.message.clone(),
             Mode::Normal => name,
         };
@@ -1009,35 +1082,63 @@ impl App {
         self.touch();
     }
 
-    fn start_search(&mut self, page: usize, forward: bool) {
-        self.clear_search();
-        self.job = Some(SearchJob { page, remaining: self.sizes.len(), forward });
+    fn start_search(&mut self, page: usize, forward: bool, origin: Option<Place>) {
+        self.job = Some(SearchJob {
+            page,
+            remaining: self.sizes.len(),
+            forward,
+            folded: self.doc.fold(&self.needle),
+            started: Instant::now(),
+            origin,
+        });
         self.message = format!("searching: {}", self.needle);
+    }
+
+    fn search_just_started(&self) -> bool {
+        self.job.as_ref().is_some_and(|job| job.started.elapsed() < FRAME_INTERVAL)
     }
 
     fn search_step(&mut self) -> bool {
         let Some(job) = self.job.as_mut() else {
             return false;
         };
-        let page = job.page;
-        let forward = job.forward;
-        job.remaining -= 1;
-        let exhausted = job.remaining == 0;
         let total = self.sizes.len();
-        job.page = if forward { (page + 1) % total } else { (page + total - 1) % total };
+        let mut candidate = None;
+        while candidate.is_none() && job.remaining > 0 {
+            let page = job.page;
+            job.remaining -= 1;
+            job.page = if job.forward { (page + 1) % total } else { (page + total - 1) % total };
+            if self.index.may_contain(page, &job.folded) {
+                candidate = Some(page);
+            }
+        }
+        let (forward, origin, exhausted) = (job.forward, job.origin, job.remaining == 0);
 
-        let hits = self.doc.search(page, &self.needle);
-        if !hits.is_empty() {
-            self.job = None;
+        let found = candidate
+            .map(|page| (page, self.doc.search(page, &self.needle)))
+            .filter(|(_, hits)| !hits.is_empty());
+        if let Some((page, hits)) = found {
+            self.clear_search();
             self.hit = if forward { 0 } else { hits.len() - 1 };
             self.hits = hits;
             self.hits_page = Some(page);
             self.clear_page_tiles(page);
+            match origin {
+                Some(place) => {
+                    self.go_to_place(place);
+                    if !matches!(self.mode, Mode::Search { .. }) {
+                        self.jumps.record(place);
+                    }
+                }
+                None => self.mark_jump(),
+            }
             self.show_hit();
         } else if exhausted {
-            self.job = None;
+            self.clear_search();
+            if let Some(place) = origin {
+                self.go_to_place(place);
+            }
             self.message = format!("not found: {}", self.needle);
-            self.dirty = true;
         }
         true
     }
@@ -1047,20 +1148,22 @@ impl App {
             self.message = "no search yet".to_string();
             return;
         }
-        let Some(page) = self.hits_page else {
-            self.start_search(self.current_page(), forward);
+        let Some(page) = self.hits_page.filter(|_| self.job.is_none()) else {
+            self.start_search(self.current_page(), forward, None);
             return;
         };
         if forward && self.hit + 1 < self.hits.len() {
             self.hit += 1;
+            self.mark_jump();
             self.show_hit();
         } else if !forward && self.hit > 0 {
             self.hit -= 1;
+            self.mark_jump();
             self.show_hit();
         } else {
             let total = self.sizes.len();
             let next = if forward { (page + 1) % total } else { (page + total - 1) % total };
-            self.start_search(next, forward);
+            self.start_search(next, forward, None);
         }
     }
 
@@ -1068,7 +1171,6 @@ impl App {
         let Some(page) = self.hits_page else {
             return;
         };
-        self.mark_jump();
         let hit = self.hits[self.hit];
         let row = self.layout.tops[page] + (hit[1] * self.scale) as i64 / self.size.cell.1;
         let col = self.layout.lefts[page] + (hit[0] * self.scale) as i64 / self.size.cell.0;

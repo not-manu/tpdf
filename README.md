@@ -46,6 +46,8 @@ rebuild after `brew upgrade mupdf`. tpdf tells you when it's needed.
 
 counts work on motions, like `5j` or `3J`. the file reloads itself when it changes.
 
+search jumps as you type. `enter` keeps the match, and `esc` puts you back where you started.
+
 `p` matches the pdf's page labels exactly, so `:pxii` works too. a pdf with no labels counts from 1, the same as `:12`.
 
 ## agents

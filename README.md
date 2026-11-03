@@ -44,7 +44,8 @@ counts work on motions, like `5j` or `3J`. the file reloads itself when it chang
 - pages are drawn with [unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders), so tmux sees ordinary text cells and handles positioning, splits, and window switches.
 - mupdf renders straight into shared memory and the terminal reads it from there, so page data never passes through tmux.
 - pages are split into tiles. only what's on screen gets rendered, plus one screen either way when idle.
-- key repeats collapse into one redraw, so holding `j` can't build up lag.
+- key repeats collapse into one redraw, and redraws are capped at 60 per second, so holding `j` can't build up lag.
+- tmux drops output, including images, when a client falls behind. tpdf keeps that from happening while it scrolls, and re-sends its images if another pane causes it anyway.
 - images in the terminal are capped at 64 MB and mupdf's cache at 32 MB.
 
 tpdf sets `allow-passthrough all` on its own pane, so tmux needs no config.

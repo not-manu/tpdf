@@ -95,17 +95,27 @@ pub fn allow_passthrough() {
         .status();
 }
 
-fn tmux_cell() -> Option<(i64, i64)> {
+fn tmux_format(format: &str) -> Option<String> {
     if !in_tmux() {
         return None;
     }
     let output = Command::new("tmux")
-        .args(["display-message", "-p", "#{window_cell_width} #{window_cell_height}"])
+        .args(["display-message", "-p", format])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
         .ok()?;
-    let text = String::from_utf8(output.stdout).ok()?;
+    String::from_utf8(output.stdout).ok()
+}
+
+pub fn tmux_discarded() -> u64 {
+    tmux_format("#{client_discarded}")
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn tmux_cell() -> Option<(i64, i64)> {
+    let text = tmux_format("#{window_cell_width} #{window_cell_height}")?;
     let mut values = text.split_whitespace().map(str::parse::<i64>);
     let cell = (values.next()?.ok()?, values.next()?.ok()?);
     (cell.0 > 0 && cell.1 > 0).then_some(cell)

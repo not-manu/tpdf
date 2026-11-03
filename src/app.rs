@@ -22,6 +22,8 @@ const ZOOM_STEP_FAST: f32 = 1.6;
 const MIN_ZOOM: f32 = 0.25;
 const MAX_ZOOM: f32 = 16.0;
 const RELOAD_INTERVAL: Duration = Duration::from_millis(500);
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const ROWS_BETWEEN_DISCARD_MARKS: i64 = 16;
 const HIGHLIGHT: [u16; 3] = [0xD0, 0xA2, 0x15];
 
 type TileKey = (usize, i64, i64);
@@ -86,6 +88,10 @@ pub struct App {
     hits_page: Option<usize>,
     hit: usize,
     quit: bool,
+    tmux: bool,
+    discarded: u64,
+    drew_since_check: bool,
+    last_frame: Instant,
 }
 
 fn page_sizes(doc: &Doc) -> Vec<(f32, f32)> {
@@ -172,6 +178,10 @@ impl App {
             hits_page: None,
             hit: 0,
             quit: false,
+            tmux,
+            discarded: term::tmux_discarded(),
+            drew_since_check: false,
+            last_frame: Instant::now() - FRAME_INTERVAL,
         };
         app.go_to_page(first_page);
         app
@@ -187,7 +197,12 @@ impl App {
             if term::readable(0) {
                 self.read_keys(&mut buffer);
             } else if self.dirty {
-                self.draw();
+                let wait = FRAME_INTERVAL.saturating_sub(self.last_frame.elapsed());
+                if wait.is_zero() {
+                    self.draw();
+                } else {
+                    term::readable(wait.as_millis() as i32 + 1);
+                }
             } else if self.search_step() {
                 continue;
             } else if !self.settled {
@@ -196,8 +211,21 @@ impl App {
                 self.read_keys(&mut buffer);
             } else if last_check.elapsed() >= RELOAD_INTERVAL {
                 self.reload_if_changed();
+                self.recover_discarded_images();
                 last_check = Instant::now();
             }
+        }
+    }
+
+    fn recover_discarded_images(&mut self) {
+        if !self.tmux || !std::mem::take(&mut self.drew_since_check) {
+            return;
+        }
+        let discarded = term::tmux_discarded();
+        if discarded != self.discarded {
+            self.discarded = discarded;
+            self.clear_tiles();
+            self.repaint();
         }
     }
 
@@ -735,14 +763,21 @@ impl App {
             self.ensure(key, &keep);
         }
 
-        let mut frame = std::mem::take(&mut self.out);
+        let mut frame = Vec::with_capacity(self.out.len() + self.size.cols as usize * self.size.rows as usize * 8);
         frame.extend_from_slice(b"\x1b[?2026h");
+        frame.append(&mut self.out);
         let first_row = self.scroll_row - self.voffset();
         self.painted.resize(self.size.rows as usize, Vec::new());
+        let mut rows_since_mark = ROWS_BETWEEN_DISCARD_MARKS;
         for y in 0..self.view_rows {
             let row = self.page_row(first_row + y, y);
             let slot = &mut self.painted[y as usize];
             if *slot != row {
+                if rows_since_mark >= ROWS_BETWEEN_DISCARD_MARKS {
+                    self.graphics.prevent_discard(&mut frame);
+                    rows_since_mark = 0;
+                }
+                rows_since_mark += 1;
                 frame.extend_from_slice(&row);
                 *slot = row;
             }
@@ -757,9 +792,9 @@ impl App {
         }
         frame.extend_from_slice(b"\x1b[?2026l");
         term::write_all(&frame);
-        frame.clear();
-        self.out = frame;
         self.dirty = false;
+        self.drew_since_check = true;
+        self.last_frame = Instant::now();
     }
 
     fn clear_search(&mut self) {

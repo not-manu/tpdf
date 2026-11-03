@@ -68,6 +68,12 @@ impl Graphics {
         self.send(out, command.as_bytes());
     }
 
+    pub fn prevent_discard(&self, out: &mut Vec<u8>) {
+        if self.tmux {
+            self.send(out, b"");
+        }
+    }
+
     fn send(&self, out: &mut Vec<u8>, command: &[u8]) {
         if !self.tmux {
             out.extend_from_slice(command);
@@ -189,6 +195,17 @@ mod tests {
         graphics.delete(&mut out, 16);
         let expected = b"\x1bPtmux;\x1b\x1b_Ga=d,d=I,q=2,i=16\x1b\x1b\\\x1b\\";
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn prevent_discard_is_an_empty_passthrough_only_in_tmux() {
+        let mut out = Vec::new();
+        Graphics::new(true).prevent_discard(&mut out);
+        assert_eq!(out, b"\x1bPtmux;\x1b\\");
+
+        let mut out = Vec::new();
+        Graphics::new(false).prevent_discard(&mut out);
+        assert!(out.is_empty());
     }
 
     #[test]

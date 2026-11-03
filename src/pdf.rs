@@ -4,6 +4,7 @@ use std::path::Path;
 
 const STORE_BYTES: usize = 32 << 20;
 const MAX_HITS: usize = 128;
+const LABEL_BYTES: usize = 64;
 const TEXT_ON_DARK: c_int = 0xCECDC3;
 const PAPER_ON_DARK: c_int = 0x100F0F;
 
@@ -22,6 +23,7 @@ unsafe extern "C" {
     fn tpdf_close(handle: *mut Handle);
     fn tpdf_pages(handle: *mut Handle) -> c_int;
     fn tpdf_bounds(handle: *mut Handle, index: c_int, width: *mut f32, height: *mut f32) -> c_int;
+    fn tpdf_label(handle: *mut Handle, index: c_int, label: *mut c_char, size: c_int) -> c_int;
     fn tpdf_render(
         handle: *mut Handle,
         index: c_int,
@@ -86,6 +88,19 @@ impl Doc {
         let (mut width, mut height) = (0.0, 0.0);
         let ok = unsafe { tpdf_bounds(self.handle, index as c_int, &mut width, &mut height) };
         (ok != 0 && width > 0.0 && height > 0.0).then_some((width, height))
+    }
+
+    fn label(&self, index: usize) -> Option<String> {
+        let mut label = [0 as c_char; LABEL_BYTES];
+        let ok = unsafe { tpdf_label(self.handle, index as c_int, label.as_mut_ptr(), LABEL_BYTES as c_int) };
+        (ok != 0).then(|| unsafe { CStr::from_ptr(label.as_ptr()) }.to_string_lossy().into_owned())
+    }
+
+    pub fn find_page(&self, target: &str) -> Option<usize> {
+        match target.strip_prefix('p') {
+            Some(label) => (0..self.pages()).find(|&index| self.label(index).as_deref() == Some(label)),
+            None => target.parse::<usize>().ok().map(|page| page.saturating_sub(1)),
+        }
     }
 
     pub fn render(&self, index: usize, scale: f32, tile: &Tile, dark: bool, rgb: &mut [u8]) -> bool {
@@ -161,5 +176,45 @@ impl Doc {
 impl Drop for Doc {
     fn drop(&mut self) {
         unsafe { tpdf_close(self.handle) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    const PAGE: &str = "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]>>";
+
+    fn open(name: &str, labels: &str) -> Doc {
+        let pdf = format!(
+            "%PDF-1.7\n1 0 obj\n<</Type/Catalog/Pages 2 0 R{labels}>>\nendobj\n2 0 obj\n<</Type/Pages/Count 3/Kids[3 0 R 4 0 R 5 0 R]>>\nendobj\n3 0 obj\n{PAGE}\nendobj\n4 0 obj\n{PAGE}\nendobj\n5 0 obj\n{PAGE}\nendobj\ntrailer\n<</Root 1 0 R>>\n"
+        );
+        let path = Path::new(env!("OUT_DIR")).join(name);
+        fs::write(&path, pdf).unwrap();
+        Doc::open(&path).unwrap()
+    }
+
+    #[test]
+    fn p_finds_a_page_by_its_label_and_a_bare_number_by_its_position() {
+        let doc = open("labeled.pdf", "/PageLabels<</Nums[0<</S/r>>2<</S/D>>]>>");
+        assert_eq!(doc.find_page("p1"), Some(2));
+        assert_eq!(doc.find_page("pii"), Some(1));
+        assert_eq!(doc.find_page("1"), Some(0));
+        assert_eq!(doc.find_page("0"), Some(0));
+    }
+
+    #[test]
+    fn a_label_or_target_that_does_not_exist_finds_nothing() {
+        let doc = open("missing.pdf", "/PageLabels<</Nums[0<</S/r>>2<</S/D>>]>>");
+        assert_eq!(doc.find_page("p2"), None);
+        assert_eq!(doc.find_page("p"), None);
+        assert_eq!(doc.find_page("nope"), None);
+    }
+
+    #[test]
+    fn without_labels_p_counts_from_one() {
+        let doc = open("plain.pdf", "");
+        assert_eq!(doc.find_page("p3"), Some(2));
     }
 }

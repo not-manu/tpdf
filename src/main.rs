@@ -19,14 +19,20 @@ use std::time::Instant;
 use crate::app::App;
 use crate::pdf::Doc;
 
-const USAGE: &str = "usage: tpdf <file.pdf> [page]\n       tpdf context [--pid <pid>] [--png <file.png>]\n       tpdf --bench <file.pdf>";
+const USAGE: &str = "usage: tpdf <file.pdf> [page | p<label>]\n       tpdf context [--pid <pid>] [--png <file.png>]\n       tpdf --bench <file.pdf>";
 const BENCH_WIDTH: f32 = 1400.0;
 
-fn view(path: PathBuf, page: Option<usize>) -> Result<(), String> {
+fn view(path: PathBuf, target: Option<&str>) -> Result<(), String> {
     let doc = Doc::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     if doc.pages() == 0 {
         return Err(format!("{}: no pages", path.display()));
     }
+    let page = target
+        .map(|target| {
+            doc.find_page(target)
+                .ok_or_else(|| format!("{}: no page: {target}", path.display()))
+        })
+        .transpose()?;
     let tmux = term::in_tmux();
     if tmux {
         term::allow_passthrough();
@@ -109,8 +115,8 @@ fn main() -> ExitCode {
         [command, rest @ ..] if command == "context" => run_context(rest),
         [flag, path] if flag == "--bench" => bench(Path::new(path)),
         [path] => view(PathBuf::from(path), None),
-        [path, page] => match page.to_str().and_then(|text| text.parse::<usize>().ok()) {
-            Some(page) => view(PathBuf::from(path), Some(page.saturating_sub(1))),
+        [path, target] => match target.to_str() {
+            Some(target) => view(PathBuf::from(path), Some(target)),
             None => Err(USAGE.to_string()),
         },
         _ => Err(USAGE.to_string()),

@@ -560,9 +560,11 @@ impl App {
                 }
                 _ => self.message = format!("bad zoom: {command}"),
             }
-        } else if let Ok(page) = command.parse::<usize>() {
+        } else if let Some(page) = self.doc.find_page(command) {
             self.mark_jump();
-            self.go_to_page(page.saturating_sub(1));
+            self.go_to_page(page);
+        } else if command.starts_with('p') {
+            self.message = format!("no page: {command}");
         } else if !command.is_empty() {
             self.message = format!("unknown command: {command}");
         }

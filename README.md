@@ -13,9 +13,9 @@ git clone https://github.com/not-manu/tpdf
 cargo install --path tpdf
 ```
 
-`tpdf <file.pdf> [page]`
+`tpdf <file.pdf> [page | p<label>]`
 
-each file reopens where you left it, at the same zoom. pass a page to open there instead. dark mode is remembered across all files.
+each file reopens where you left it, at the same zoom. pass a page to open there instead, like `126` or `p114`. dark mode is remembered across all files.
 
 rebuild after `brew upgrade mupdf`. tpdf tells you when it's needed.
 
@@ -28,7 +28,8 @@ rebuild after `brew upgrade mupdf`. tpdf tells you when it's needed.
 | `ctrl-f` `ctrl-b` `space` | a full screen |
 | `J` `K` | next / previous page |
 | `gg` `G` | first page / end |
-| `12G` `12gg` `:12` | page 12 |
+| `12G` `12gg` `:12` | page 12, counting from the start of the file |
+| `:p12` | the page the pdf labels 12, usually its printed number |
 | `ctrl-o` `ctrl-i` | back / forward through places you jumped from |
 | `=` `-` | zoom |
 | `+` `_` | zoom faster |
@@ -44,6 +45,8 @@ rebuild after `brew upgrade mupdf`. tpdf tells you when it's needed.
 | `q` `:q` | quit |
 
 counts work on motions, like `5j` or `3J`. the file reloads itself when it changes.
+
+`p` matches the pdf's page labels exactly, so `:pxii` works too. a pdf with no labels counts from 1, the same as `:12`.
 
 ## agents
 

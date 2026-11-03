@@ -92,6 +92,26 @@ int tpdf_bounds(tpdf *t, int index, float *width, float *height)
     return ok;
 }
 
+int tpdf_label(tpdf *t, int index, char *label, int size)
+{
+    fz_context *ctx = t->ctx;
+    fz_page *page = NULL;
+    int ok = 1;
+    fz_var(page);
+    fz_var(ok);
+    fz_try(ctx) {
+        page = fz_load_page(ctx, t->doc, index);
+        fz_page_label(ctx, page, label, size);
+    }
+    fz_always(ctx)
+        fz_drop_page(ctx, page);
+    fz_catch(ctx) {
+        fz_ignore_error(ctx);
+        ok = 0;
+    }
+    return ok;
+}
+
 static cached_list *load_list(tpdf *t, int index)
 {
     fz_context *ctx = t->ctx;

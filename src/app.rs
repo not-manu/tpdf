@@ -108,6 +108,19 @@ pub struct App {
     positions: Positions,
     jumps: Jumps,
     frame_in_flight: Option<(CString, Instant)>,
+    printed: Option<(usize, Option<String>)>,
+}
+
+fn printed_page(label: Option<String>, page: usize) -> Option<String> {
+    let label: String = label?.chars().filter(|character| !character.is_control()).collect();
+    (!label.is_empty() && label != (page + 1).to_string()).then_some(label)
+}
+
+fn status_right(printed: Option<&str>, position: String, width: usize) -> String {
+    match printed.map(|label| format!("p{label}  {position}")) {
+        Some(full) if full.chars().count() < width => full,
+        _ => position,
+    }
 }
 
 fn page_sizes(doc: &Doc) -> Vec<(f32, f32)> {
@@ -182,6 +195,7 @@ impl App {
             positions,
             jumps: Jumps::default(),
             frame_in_flight: None,
+            printed: None,
             modified: modified(&path),
             index: Index::build(&path, sizes.len()),
             path,
@@ -752,6 +766,7 @@ impl App {
             self.modified = current;
             self.sizes = page_sizes(&self.doc);
             self.index = Index::build(&self.path, self.sizes.len());
+            self.printed = None;
             self.hits.clear();
             self.hits_page = None;
             self.job = None;
@@ -969,7 +984,11 @@ impl App {
         }
     }
 
-    fn status_row(&self) -> Vec<u8> {
+    fn status_row(&mut self) -> Vec<u8> {
+        let page = self.current_page();
+        if self.printed.as_ref().is_none_or(|(known, _)| *known != page) {
+            self.printed = Some((page, printed_page(self.doc.label(page), page)));
+        }
         let name = self
             .path
             .file_name()
@@ -990,9 +1009,10 @@ impl App {
         };
         let zoom = self.zoom_label();
         let count = self.count.map_or(String::new(), |count| format!("{count}  "));
-        let right = format!("{count}{}/{}  {zoom}", self.current_page() + 1, self.sizes.len());
-
+        let position = format!("{count}{}/{}  {zoom}", page + 1, self.sizes.len());
         let width = self.size.cols as usize;
+        let printed = self.printed.as_ref().and_then(|(_, label)| label.as_deref());
+        let right = status_right(printed, position, width);
         let right_width = right.chars().count();
         let room = width.saturating_sub(right_width + 2);
         let left: String = left.chars().take(room).collect();
@@ -1192,6 +1212,34 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_label_that_differs_from_the_position_is_the_printed_page() {
+        assert_eq!(printed_page(Some("460".to_string()), 471).as_deref(), Some("460"));
+        assert_eq!(printed_page(Some("xii".to_string()), 11).as_deref(), Some("xii"));
+    }
+
+    #[test]
+    fn a_label_that_only_repeats_the_position_is_not_shown() {
+        assert_eq!(printed_page(Some("472".to_string()), 471), None);
+        assert_eq!(printed_page(Some(String::new()), 471), None);
+        assert_eq!(printed_page(None, 471), None);
+    }
+
+    #[test]
+    fn a_label_cannot_send_control_characters_to_the_terminal() {
+        assert_eq!(printed_page(Some("\u{1b}]0;x\u{7}7".to_string()), 0).as_deref(), Some("]0;x7"));
+        assert_eq!(printed_page(Some("\u{1b}\u{7}".to_string()), 0), None);
+    }
+
+    #[test]
+    fn the_printed_page_comes_first_and_is_dropped_when_it_does_not_fit() {
+        let position = || "472/1007  fit".to_string();
+        assert_eq!(status_right(Some("460"), position(), 80), "p460  472/1007  fit");
+        assert_eq!(status_right(Some("460"), position(), 20), "p460  472/1007  fit");
+        assert_eq!(status_right(Some("460"), position(), 19), "472/1007  fit");
+        assert_eq!(status_right(None, position(), 80), "472/1007  fit");
+    }
 
     #[test]
     fn fit_page_uses_the_tighter_dimension() {

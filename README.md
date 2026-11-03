@@ -48,7 +48,7 @@ counts work on motions, like `5j` or `3J`. the file reloads itself when it chang
 
 search jumps as you type. `enter` keeps the match, and `esc` puts you back where you started.
 
-`p` matches the pdf's page labels exactly, so `:pxii` works too. a pdf with no labels counts from 1, the same as `:12`.
+`p` matches the pdf's page labels exactly, so `:pxii` works too. a pdf with no labels counts from 1, the same as `:12`. when a page's label differs from its position, the status bar shows both, like `p460  472/1007`.
 
 ## agents
 

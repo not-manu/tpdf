@@ -92,7 +92,7 @@ impl Doc {
         (ok != 0 && width > 0.0 && height > 0.0).then_some((width, height))
     }
 
-    fn label(&self, index: usize) -> Option<String> {
+    pub fn label(&self, index: usize) -> Option<String> {
         let mut label = [0 as c_char; LABEL_BYTES];
         let ok = unsafe { tpdf_label(self.handle, index as c_int, label.as_mut_ptr(), LABEL_BYTES as c_int) };
         (ok != 0).then(|| unsafe { CStr::from_ptr(label.as_ptr()) }.to_string_lossy().into_owned())

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::context::{self, Publisher, Region, State};
 use crate::input::{self, Key};
+use crate::jumps::{Jumps, Place};
 use crate::kitty::{self, Graphics, Image};
 use crate::layout::{Layout, TILE_COLS, TILE_ROWS};
 use crate::pdf::{self, Doc};
@@ -91,6 +92,7 @@ pub struct App {
     publisher: Publisher,
     published_path: String,
     positions: Positions,
+    jumps: Jumps,
 }
 
 fn page_sizes(doc: &Doc) -> Vec<(f32, f32)> {
@@ -163,6 +165,7 @@ impl App {
             publisher: Publisher::new(),
             published_path,
             positions,
+            jumps: Jumps::default(),
             modified: modified(&path),
             path,
             doc,
@@ -203,10 +206,7 @@ impl App {
         };
         app.go_to_page(page);
         if let Some(position) = resume {
-            let rows = app.layout.rows[page] as f32;
-            app.scroll_row += (position.within.clamp(0.0, 1.0) * rows) as i64;
-            app.scroll_col = (position.across * app.layout.canvas_cols as f32) as i64 - view_cols / 2;
-            app.clamp();
+            app.go_to_place(Place { page, within: position.within, across: position.across });
             if page > 0 || position.within > 0.0 {
                 app.message = format!("resumed at p.{}", page + 1);
             }
@@ -214,21 +214,71 @@ impl App {
         app
     }
 
-    fn save_position(&mut self) {
-        let round = |value: f64| ((value * 10000.0).round() / 10000.0) as f32;
+    fn place(&self) -> Place {
         let page = self.layout.page_at(self.scroll_row.max(0));
         let within = (self.scroll_row - self.layout.tops[page]).max(0) as f64
             / self.layout.rows[page].max(1) as f64;
         let across = (self.scroll_col + self.view_cols / 2) as f64 / self.layout.canvas_cols.max(1) as f64;
+        Place { page, within: within.min(1.0) as f32, across: across as f32 }
+    }
+
+    fn go_to_place(&mut self, place: Place) {
+        let page = place.page.min(self.sizes.len() - 1);
+        let rows = self.layout.rows[page] as f32;
+        let canvas = self.layout.canvas_cols as f32;
+        self.scroll_row = self.layout.tops[page] + (place.within.clamp(0.0, 1.0) * rows).round() as i64;
+        self.scroll_col = (place.across * canvas).round() as i64 - self.view_cols / 2;
+        self.clamp();
+        self.touch();
+    }
+
+    fn mark_jump(&mut self) {
+        self.jumps.record(self.place());
+    }
+
+    fn jump_back(&mut self, times: i64) {
+        self.job = None;
+        let current = self.place();
+        let mut target = None;
+        for _ in 0..times {
+            match self.jumps.back(current) {
+                Some(place) => target = Some(place),
+                None => break,
+            }
+        }
+        match target {
+            Some(place) => self.go_to_place(place),
+            None => self.message = "at the oldest jump".to_string(),
+        }
+    }
+
+    fn jump_forward(&mut self, times: i64) {
+        self.job = None;
+        let mut target = None;
+        for _ in 0..times {
+            match self.jumps.forward() {
+                Some(place) => target = Some(place),
+                None => break,
+            }
+        }
+        match target {
+            Some(place) => self.go_to_place(place),
+            None => self.message = "at the newest jump".to_string(),
+        }
+    }
+
+    fn save_position(&mut self) {
+        let round = |value: f32| (value * 10000.0).round() / 10000.0;
+        let place = self.place();
         let zoom = match self.fit {
-            Fit::Free => self.scale as f64 / self.fit_for(Fit::Page) as f64,
+            Fit::Free => self.scale / self.fit_for(Fit::Page),
             _ => 1.0,
         };
         self.positions.save(Position {
             path: self.published_path.clone(),
-            page: page + 1,
-            within: round(within.min(1.0)),
-            across: round(across),
+            page: place.page + 1,
+            within: round(place.within),
+            across: round(place.across),
             fit: self.fit,
             zoom: round(zoom),
         });
@@ -386,18 +436,30 @@ impl App {
         let full = (self.view_rows - 2).max(1);
         match key {
             Key::Char('g') if pending_g => {
+                self.mark_jump();
                 self.go_to_page(count.map_or(0, |page| (page - 1).max(0) as usize));
             }
             Key::Char('g') => {
                 self.pending_g = true;
                 self.count = count;
             }
-            Key::Home => self.go_to_page(0),
-            Key::End => self.go_to_end(),
-            Key::Char('G') => match count {
-                Some(page) => self.go_to_page((page - 1).max(0) as usize),
-                None => self.go_to_end(),
-            },
+            Key::Home => {
+                self.mark_jump();
+                self.go_to_page(0);
+            }
+            Key::End => {
+                self.mark_jump();
+                self.go_to_end();
+            }
+            Key::Char('G') => {
+                self.mark_jump();
+                match count {
+                    Some(page) => self.go_to_page((page - 1).max(0) as usize),
+                    None => self.go_to_end(),
+                }
+            }
+            Key::Ctrl('o') => self.jump_back(times),
+            Key::Ctrl('i') => self.jump_forward(times),
             Key::Char('j') | Key::Down => self.scroll_by(LINE_STEP * times, 0),
             Key::Char('k') | Key::Up => self.scroll_by(-LINE_STEP * times, 0),
             Key::Char('h') | Key::Left => self.scroll_by(0, -COLUMN_STEP * times),
@@ -468,6 +530,7 @@ impl App {
                 _ => self.message = format!("bad zoom: {command}"),
             }
         } else if let Ok(page) = command.parse::<usize>() {
+            self.mark_jump();
             self.go_to_page(page.saturating_sub(1));
         } else if !command.is_empty() {
             self.message = format!("unknown command: {command}");
@@ -945,6 +1008,7 @@ impl App {
         let Some(page) = self.hits_page else {
             return;
         };
+        self.mark_jump();
         let hit = self.hits[self.hit];
         let row = self.layout.tops[page] + (hit[1] * self.scale) as i64 / self.size.cell.1;
         let col = self.layout.lefts[page] + (hit[0] * self.scale) as i64 / self.size.cell.0;

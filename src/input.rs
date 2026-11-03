@@ -115,6 +115,7 @@ mod tests {
     #[test]
     fn control_keys() {
         assert_eq!(parse(b"\x04\x15"), [Key::Ctrl('d'), Key::Ctrl('u')]);
+        assert_eq!(parse(b"\x0f\x09"), [Key::Ctrl('o'), Key::Ctrl('i')]);
         assert_eq!(parse(b"\r\x7f"), [Key::Enter, Key::Backspace]);
     }
 

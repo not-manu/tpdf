@@ -26,6 +26,7 @@ rebuild after `brew upgrade mupdf`. tpdf tells you when it's needed.
 | `J` `K` | next / previous page |
 | `gg` `G` | first page / end |
 | `12G` `12gg` `:12` | page 12 |
+| `ctrl-o` `ctrl-i` | back / forward through places you jumped from |
 | `=` `-` | zoom |
 | `+` `_` | zoom faster |
 | `:150%` | set zoom, relative to fit-page |

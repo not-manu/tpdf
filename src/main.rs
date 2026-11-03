@@ -1,6 +1,7 @@
 mod app;
 mod context;
 mod input;
+mod jumps;
 mod kitty;
 mod layout;
 mod pdf;

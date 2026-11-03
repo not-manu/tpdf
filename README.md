@@ -1,2 +1,58 @@
 **tpdf**  
-a pdf reader for the terminal.
+a pdf reader for the terminal. fast, small, vim keys, and it draws inside tmux panes.
+
+## install
+
+needs ghostty or kitty, plus homebrew's mupdf.
+
+```sh
+brew install mupdf
+cargo install --path .
+```
+
+`tpdf <file.pdf> [page]`
+
+rebuild after `brew upgrade mupdf`. tpdf tells you when it's needed.
+
+## keys
+
+| key | action |
+| --- | --- |
+| `j` `k` `h` `l` | scroll |
+| `ctrl-d` `ctrl-u` | half a screen |
+| `ctrl-f` `ctrl-b` `space` | a full screen |
+| `J` `K` | next / previous page |
+| `gg` `G` | first page / end |
+| `12G` `12gg` `:12` | page 12 |
+| `=` `-` | zoom |
+| `+` `_` | zoom faster |
+| `:150%` | set zoom, relative to fit-page |
+| `0` `w` | fit page / toggle fit width |
+| `/` `?` | search forward / back |
+| `n` `N` | next / previous match |
+| `esc` | clear search |
+| `z` | dark mode |
+| `f` | toggle status bar |
+| `r` | reload |
+| `ctrl-l` | redraw |
+| `q` `:q` | quit |
+
+counts work on motions, like `5j` or `3J`. the file reloads itself when it changes.
+
+## how it stays fast in tmux
+
+- pages are drawn with [unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders), so tmux sees ordinary text cells and handles positioning, splits, and window switches.
+- mupdf renders straight into shared memory and the terminal reads it from there, so page data never passes through tmux.
+- pages are split into tiles. only what's on screen gets rendered, plus one screen either way when idle.
+- key repeats collapse into one redraw, so holding `j` can't build up lag.
+- images in the terminal are capped at 64 MB and mupdf's cache at 32 MB.
+
+tpdf sets `allow-passthrough all` on its own pane, so tmux needs no config.
+
+## limits
+
+- local terminals only: shared memory doesn't cross ssh.
+- no nested tmux.
+- no password-protected files.
+
+`tpdf --bench <file.pdf>` prints open, render, and memory numbers.

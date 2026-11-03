@@ -75,6 +75,7 @@ pub struct App {
     tick: u64,
     out: Vec<u8>,
     painted: Vec<Vec<u8>>,
+    painted_view: Option<(i64, i64)>,
     dirty: bool,
     settled: bool,
     mode: Mode,
@@ -191,6 +192,7 @@ impl App {
             tick: 0,
             out: Vec::with_capacity(1 << 16),
             painted: Vec::new(),
+            painted_view: None,
             dirty: true,
             settled: false,
             mode: Mode::Normal,
@@ -573,6 +575,7 @@ impl App {
 
     fn repaint(&mut self) {
         self.painted.clear();
+        self.painted_view = None;
         self.out.extend_from_slice(b"\x1b[0m\x1b[2J");
         self.touch();
     }
@@ -839,9 +842,8 @@ impl App {
         ensured
     }
 
-    fn page_row(&self, doc_row: i64, y: i64) -> Vec<u8> {
+    fn page_row(&self, doc_row: i64) -> Vec<u8> {
         let mut row = Vec::with_capacity(self.view_cols as usize * 8 + 32);
-        write!(row, "\x1b[{};1H", y + 1).expect("writing to a Vec cannot fail");
         let blank = |row: &mut Vec<u8>| row.extend_from_slice(b"\x1b[0m\x1b[K");
         if doc_row < 0 || doc_row >= self.layout.total_rows {
             blank(&mut row);
@@ -927,6 +929,30 @@ impl App {
         row
     }
 
+    fn scroll_painted(&mut self, first_row: i64, frame: &mut Vec<u8>) {
+        let Some((painted_first, painted_col)) = self.painted_view else {
+            return;
+        };
+        let delta = first_row - painted_first;
+        if delta == 0 || painted_col != self.scroll_col || delta.abs() >= self.view_rows {
+            return;
+        }
+        let count = delta.unsigned_abs() as usize;
+        let rows = &mut self.painted[..self.view_rows as usize];
+        let (direction, stale) = if delta > 0 {
+            rows.rotate_left(count);
+            ('S', rows.len() - count..rows.len())
+        } else {
+            rows.rotate_right(count);
+            ('T', 0..count)
+        };
+        for slot in &mut rows[stale] {
+            slot.clear();
+        }
+        write!(frame, "\x1b[1;{}r\x1b[{count}{direction}\x1b[r", self.view_rows)
+            .expect("writing to a Vec cannot fail");
+    }
+
     fn draw(&mut self) {
         self.tick += 1;
         let visible = self.visible_tiles();
@@ -940,9 +966,10 @@ impl App {
         frame.append(&mut self.out);
         let first_row = self.scroll_row - self.voffset();
         self.painted.resize(self.size.rows as usize, Vec::new());
+        self.scroll_painted(first_row, &mut frame);
         let mut rows_since_mark = ROWS_BETWEEN_DISCARD_MARKS;
         for y in 0..self.view_rows {
-            let row = self.page_row(first_row + y, y);
+            let row = self.page_row(first_row + y);
             let slot = &mut self.painted[y as usize];
             if *slot != row {
                 if rows_since_mark >= ROWS_BETWEEN_DISCARD_MARKS {
@@ -950,10 +977,12 @@ impl App {
                     rows_since_mark = 0;
                 }
                 rows_since_mark += 1;
+                write!(frame, "\x1b[{};1H", y + 1).expect("writing to a Vec cannot fail");
                 frame.extend_from_slice(&row);
                 *slot = row;
             }
         }
+        self.painted_view = Some((first_row, self.scroll_col));
         if self.show_status {
             let row = self.status_row();
             let slot = &mut self.painted[self.size.rows as usize - 1];

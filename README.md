@@ -1,13 +1,16 @@
 **tpdf**  
 a pdf reader for the terminal. fast, small, vim keys, and it draws inside tmux panes.
 
+![tpdf in a tmux split, with latex source on the left and the rendered pdf on the right](assets/demo.png)
+
 ## install
 
-needs ghostty or kitty, plus homebrew's mupdf.
+needs ghostty or kitty, [rust](https://rustup.rs), and [homebrew](https://brew.sh)'s mupdf.
 
 ```sh
 brew install mupdf
-cargo install --path .
+git clone https://github.com/not-manu/tpdf
+cargo install --path tpdf
 ```
 
 `tpdf <file.pdf> [page]`

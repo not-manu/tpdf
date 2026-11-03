@@ -11,6 +11,7 @@ use crate::input::{self, Key};
 use crate::kitty::{self, Graphics, Image};
 use crate::layout::{Layout, TILE_COLS, TILE_ROWS};
 use crate::pdf::{self, Doc};
+use crate::position::{Fit, Position, Positions};
 use crate::term::{self, RESIZED, STOP, Size};
 
 const IMAGE_BUDGET: usize = 64 << 20;
@@ -28,13 +29,6 @@ const ROWS_BETWEEN_DISCARD_MARKS: i64 = 16;
 const HIGHLIGHT: [u16; 3] = [0xD0, 0xA2, 0x15];
 
 type TileKey = (usize, i64, i64);
-
-#[derive(Clone, Copy, PartialEq)]
-enum Fit {
-    Page,
-    Width,
-    Free,
-}
 
 enum Mode {
     Normal,
@@ -95,6 +89,7 @@ pub struct App {
     last_frame: Instant,
     publisher: Publisher,
     published_path: String,
+    positions: Positions,
 }
 
 fn page_sizes(doc: &Doc) -> Vec<(f32, f32)> {
@@ -139,21 +134,34 @@ fn blend(pixels: &mut [u8], width: i64, height: i64, rect: [i64; 4]) {
 }
 
 impl App {
-    pub fn new(path: PathBuf, doc: Doc, first_page: usize, tmux: bool) -> App {
+    pub fn new(path: PathBuf, doc: Doc, first_page: Option<usize>, tmux: bool) -> App {
         let sizes = page_sizes(&doc);
         let size = term::size();
         let show_status = true;
         let (view_rows, view_cols) = view_size(size, show_status);
-        let first_page = first_page.min(sizes.len() - 1);
-        let scale = fit_scale(sizes[first_page], Fit::Page, (view_rows, view_cols), size.cell);
-        let layout = Layout::new(&sizes, scale, size.cell, view_cols);
         let published_path = fs::canonicalize(&path)
             .unwrap_or_else(|_| path.clone())
             .to_string_lossy()
             .into_owned();
+        let (positions, saved) = Positions::open(&published_path);
+        let resume = saved.filter(|_| first_page.is_none());
+        let page = first_page
+            .or(resume.as_ref().map(|position| position.page - 1))
+            .unwrap_or(0)
+            .min(sizes.len() - 1);
+        let fit = resume.as_ref().map_or(Fit::Page, |position| position.fit);
+        let view = (view_rows, view_cols);
+        let scale = match (fit, &resume) {
+            (Fit::Free, Some(position)) => {
+                fit_scale(sizes[page], Fit::Page, view, size.cell) * position.zoom.clamp(MIN_ZOOM, MAX_ZOOM)
+            }
+            _ => fit_scale(sizes[page], fit, view, size.cell),
+        };
+        let layout = Layout::new(&sizes, scale, size.cell, view_cols);
         let mut app = App {
             publisher: Publisher::new(),
             published_path,
+            positions,
             modified: modified(&path),
             path,
             doc,
@@ -162,7 +170,7 @@ impl App {
             view_rows,
             view_cols,
             show_status,
-            fit: Fit::Page,
+            fit,
             scale,
             layout,
             scroll_row: 0,
@@ -192,8 +200,37 @@ impl App {
             drew_since_check: false,
             last_frame: Instant::now() - FRAME_INTERVAL,
         };
-        app.go_to_page(first_page);
+        app.go_to_page(page);
+        if let Some(position) = resume {
+            let rows = app.layout.rows[page] as f32;
+            app.scroll_row += (position.within.clamp(0.0, 1.0) * rows) as i64;
+            app.scroll_col = (position.across * app.layout.canvas_cols as f32) as i64 - view_cols / 2;
+            app.clamp();
+            if page > 0 || position.within > 0.0 {
+                app.message = format!("resumed at p.{}", page + 1);
+            }
+        }
         app
+    }
+
+    fn save_position(&mut self) {
+        let round = |value: f64| ((value * 10000.0).round() / 10000.0) as f32;
+        let page = self.layout.page_at(self.scroll_row.max(0));
+        let within = (self.scroll_row - self.layout.tops[page]).max(0) as f64
+            / self.layout.rows[page].max(1) as f64;
+        let across = (self.scroll_col + self.view_cols / 2) as f64 / self.layout.canvas_cols.max(1) as f64;
+        let zoom = match self.fit {
+            Fit::Free => self.scale as f64 / self.fit_for(Fit::Page) as f64,
+            _ => 1.0,
+        };
+        self.positions.save(Position {
+            path: self.published_path.clone(),
+            page: page + 1,
+            within: round(within.min(1.0)),
+            across: round(across),
+            fit: self.fit,
+            zoom: round(zoom),
+        });
     }
 
     pub fn run(&mut self) {
@@ -218,6 +255,7 @@ impl App {
                 self.settled = !self.prefetch();
                 if self.settled {
                     self.publish();
+                    self.save_position();
                 }
             } else if term::readable(RELOAD_INTERVAL.as_millis() as i32) {
                 self.read_keys(&mut buffer);
@@ -277,6 +315,7 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
+        self.save_position();
         self.publisher.remove();
         self.clear_tiles();
         term::write_all(&self.out);

@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +8,7 @@ use std::{env, path};
 use serde::{Deserialize, Serialize};
 
 use crate::pdf::{self, Doc};
+use crate::store;
 
 const PNG_LONG_EDGE: f32 = 1568.0;
 const PNG_MAX_SCALE: f32 = 4.0;
@@ -88,14 +87,6 @@ struct Output<'a> {
     other_readers: Vec<OtherReader<'a>>,
 }
 
-fn state_dir() -> Option<PathBuf> {
-    let base = env::var_os("XDG_STATE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| Path::new(&home).join(".local/state")))?;
-    Some(base.join("tpdf"))
-}
-
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
@@ -111,10 +102,7 @@ pub fn tmux_pane() -> Option<String> {
 
 impl Publisher {
     pub fn new() -> Publisher {
-        let file = state_dir().and_then(|dir| {
-            DirBuilder::new().recursive(true).mode(0o700).create(&dir).ok()?;
-            Some(dir.join(format!("{}.json", process::id())))
-        });
+        let file = store::dir("readers").map(|dir| dir.join(format!("{}.json", process::id())));
         Publisher { file, last: None }
     }
 
@@ -127,19 +115,8 @@ impl Publisher {
             return;
         };
         let stamped = State { updated: now(), ..state };
-        let Ok(json) = serde_json::to_vec(&stamped) else {
-            return;
-        };
-        let temporary = file.with_extension("json.tmp");
-        let written = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)
-            .and_then(|mut handle| handle.write_all(&json));
-        if written.is_ok() {
-            let _ = fs::rename(&temporary, file);
+        if let Ok(json) = serde_json::to_vec(&stamped) {
+            store::write_atomic(file, &json);
         }
     }
 
@@ -156,7 +133,7 @@ fn is_alive(pid: u32) -> bool {
 }
 
 fn read_states() -> Vec<State> {
-    let Some(entries) = state_dir().and_then(|dir| fs::read_dir(dir).ok()) else {
+    let Some(entries) = store::dir("readers").and_then(|dir| fs::read_dir(dir).ok()) else {
         return Vec::new();
     };
     let mut states = Vec::new();

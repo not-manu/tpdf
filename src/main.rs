@@ -4,6 +4,8 @@ mod input;
 mod kitty;
 mod layout;
 mod pdf;
+mod position;
+mod store;
 mod term;
 
 use std::env;
@@ -18,7 +20,7 @@ use crate::pdf::Doc;
 const USAGE: &str = "usage: tpdf <file.pdf> [page]\n       tpdf context [--pid <pid>] [--png <file.png>]\n       tpdf --bench <file.pdf>";
 const BENCH_WIDTH: f32 = 1400.0;
 
-fn view(path: PathBuf, page: usize) -> Result<(), String> {
+fn view(path: PathBuf, page: Option<usize>) -> Result<(), String> {
     let doc = Doc::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     if doc.pages() == 0 {
         return Err(format!("{}: no pages", path.display()));
@@ -104,9 +106,9 @@ fn main() -> ExitCode {
     let result = match args.as_slice() {
         [command, rest @ ..] if command == "context" => run_context(rest),
         [flag, path] if flag == "--bench" => bench(Path::new(path)),
-        [path] => view(PathBuf::from(path), 0),
+        [path] => view(PathBuf::from(path), None),
         [path, page] => match page.to_str().and_then(|text| text.parse::<usize>().ok()) {
-            Some(page) => view(PathBuf::from(path), page.saturating_sub(1)),
+            Some(page) => view(PathBuf::from(path), Some(page.saturating_sub(1))),
             None => Err(USAGE.to_string()),
         },
         _ => Err(USAGE.to_string()),

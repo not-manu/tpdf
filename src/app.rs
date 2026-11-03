@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::context::{self, Publisher, Region, State};
 use crate::input::{self, Key};
 use crate::kitty::{self, Graphics, Image};
 use crate::layout::{Layout, TILE_COLS, TILE_ROWS};
@@ -92,6 +93,8 @@ pub struct App {
     discarded: u64,
     drew_since_check: bool,
     last_frame: Instant,
+    publisher: Publisher,
+    published_path: String,
 }
 
 fn page_sizes(doc: &Doc) -> Vec<(f32, f32)> {
@@ -144,7 +147,13 @@ impl App {
         let first_page = first_page.min(sizes.len() - 1);
         let scale = fit_scale(sizes[first_page], Fit::Page, (view_rows, view_cols), size.cell);
         let layout = Layout::new(&sizes, scale, size.cell, view_cols);
+        let published_path = fs::canonicalize(&path)
+            .unwrap_or_else(|_| path.clone())
+            .to_string_lossy()
+            .into_owned();
         let mut app = App {
+            publisher: Publisher::new(),
+            published_path,
             modified: modified(&path),
             path,
             doc,
@@ -207,6 +216,9 @@ impl App {
                 continue;
             } else if !self.settled {
                 self.settled = !self.prefetch();
+                if self.settled {
+                    self.publish();
+                }
             } else if term::readable(RELOAD_INTERVAL.as_millis() as i32) {
                 self.read_keys(&mut buffer);
             } else if last_check.elapsed() >= RELOAD_INTERVAL {
@@ -229,7 +241,43 @@ impl App {
         }
     }
 
+    pub fn publish(&mut self) {
+        let from = self.scroll_row - self.voffset();
+        let (cell_w, cell_h) = self.size.cell;
+        let scale = self.scale;
+        let round = |value: f32| (value * 10.0).round() / 10.0;
+        let visible = self
+            .layout
+            .spans(from, from + self.view_rows, self.scroll_col, self.view_cols)
+            .into_iter()
+            .map(|span| {
+                let (width, height) = self.sizes[span.page];
+                Region {
+                    page: span.page + 1,
+                    x0: round((span.cols.start * cell_w) as f32 / scale),
+                    y0: round((span.rows.start * cell_h) as f32 / scale),
+                    x1: round(((span.cols.end * cell_w) as f32 / scale).min(width)),
+                    y1: round(((span.rows.end * cell_h) as f32 / scale).min(height)),
+                }
+            })
+            .collect();
+        let state = State {
+            pid: std::process::id(),
+            path: self.published_path.clone(),
+            page: self.current_page() + 1,
+            pages: self.sizes.len(),
+            zoom: self.zoom_label(),
+            search: self.hits_page.map(|_| self.needle.clone()),
+            visible,
+            tmux_socket: context::tmux_socket(),
+            tmux_pane: context::tmux_pane(),
+            updated: 0,
+        };
+        self.publisher.publish(state);
+    }
+
     pub fn shutdown(&mut self) {
+        self.publisher.remove();
         self.clear_tiles();
         term::write_all(&self.out);
         self.out.clear();
@@ -613,25 +661,12 @@ impl App {
     }
 
     fn tiles_between(&self, from: i64, to: i64, keys: &mut Vec<TileKey>) {
-        let (from, to) = (from.max(0), to.min(self.layout.total_rows));
-        if from >= to {
-            return;
-        }
-        let mut page = self.layout.page_at(from);
-        while page < self.sizes.len() && self.layout.tops[page] < to {
-            let first = (from - self.layout.tops[page]).max(0);
-            let last = (to - self.layout.tops[page]).min(self.layout.rows[page]);
-            let left = self.layout.lefts[page] - self.scroll_col;
-            let first_col = (-left).max(0);
-            let last_col = (self.view_cols - left).min(self.layout.cols[page]);
-            if first < last && first_col < last_col {
-                for row in first / TILE_ROWS..=(last - 1) / TILE_ROWS {
-                    for col in first_col / TILE_COLS..=(last_col - 1) / TILE_COLS {
-                        keys.push((page, row, col));
-                    }
+        for span in self.layout.spans(from, to, self.scroll_col, self.view_cols) {
+            for row in span.rows.start / TILE_ROWS..=(span.rows.end - 1) / TILE_ROWS {
+                for col in span.cols.start / TILE_COLS..=(span.cols.end - 1) / TILE_COLS {
+                    keys.push((span.page, row, col));
                 }
             }
-            page += 1;
         }
     }
 
@@ -723,6 +758,14 @@ impl App {
         row
     }
 
+    fn zoom_label(&self) -> String {
+        match self.fit {
+            Fit::Page => "fit".to_string(),
+            Fit::Width => "width".to_string(),
+            Fit::Free => format!("{:.0}%", self.scale / self.fit_for(Fit::Page) * 100.0),
+        }
+    }
+
     fn status_row(&self) -> Vec<u8> {
         let name = self
             .path
@@ -735,11 +778,7 @@ impl App {
             Mode::Normal if !self.message.is_empty() => self.message.clone(),
             Mode::Normal => name,
         };
-        let zoom = match self.fit {
-            Fit::Page => "fit".to_string(),
-            Fit::Width => "width".to_string(),
-            Fit::Free => format!("{:.0}%", self.scale / self.fit_for(Fit::Page) * 100.0),
-        };
+        let zoom = self.zoom_label();
         let count = self.count.map_or(String::new(), |count| format!("{count}  "));
         let right = format!("{count}{}/{}  {zoom}", self.current_page() + 1, self.sizes.len());
 

@@ -170,6 +170,60 @@ int tpdf_render(tpdf *t, int index, float scale, int x, int y, int width, int he
     return ok;
 }
 
+char *tpdf_text(tpdf *t, int index, float x0, float y0, float x1, float y1)
+{
+    fz_context *ctx = t->ctx;
+    fz_page *page = NULL;
+    fz_stext_page *stext = NULL;
+    char *text = NULL;
+    fz_var(page);
+    fz_var(stext);
+    fz_var(text);
+    fz_try(ctx) {
+        fz_stext_options options = { 0 };
+        options.flags = FZ_STEXT_DEHYPHENATE;
+        page = fz_load_page(ctx, t->doc, index);
+        fz_rect bounds = fz_bound_page(ctx, page);
+        stext = fz_new_stext_page_from_page(ctx, page, &options);
+        fz_rect area = fz_make_rect(x0 + bounds.x0, y0 + bounds.y0, x1 + bounds.x0, y1 + bounds.y0);
+        text = fz_copy_rectangle(ctx, stext, area, 0);
+    }
+    fz_always(ctx) {
+        fz_drop_stext_page(ctx, stext);
+        fz_drop_page(ctx, page);
+    }
+    fz_catch(ctx) {
+        fz_ignore_error(ctx);
+        return NULL;
+    }
+    return text;
+}
+
+void tpdf_free_text(tpdf *t, char *text)
+{
+    fz_free(t->ctx, text);
+}
+
+int tpdf_save_png(tpdf *t, const char *path, int width, int height, unsigned char *rgb)
+{
+    fz_context *ctx = t->ctx;
+    fz_pixmap *pixmap = NULL;
+    int ok = 1;
+    fz_var(pixmap);
+    fz_var(ok);
+    fz_try(ctx) {
+        pixmap = fz_new_pixmap_with_data(ctx, fz_device_rgb(ctx), width, height, NULL, 0, width * 3, rgb);
+        fz_save_pixmap_as_png(ctx, pixmap, path);
+    }
+    fz_always(ctx)
+        fz_drop_pixmap(ctx, pixmap);
+    fz_catch(ctx) {
+        fz_ignore_error(ctx);
+        ok = 0;
+    }
+    return ok;
+}
+
 int tpdf_search(tpdf *t, int index, const char *needle, float *out, int max)
 {
     fz_context *ctx = t->ctx;

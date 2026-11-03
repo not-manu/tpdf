@@ -1,4 +1,5 @@
 mod app;
+mod context;
 mod input;
 mod kitty;
 mod layout;
@@ -14,7 +15,7 @@ use std::time::Instant;
 use crate::app::App;
 use crate::pdf::Doc;
 
-const USAGE: &str = "usage: tpdf <file.pdf> [page]\n       tpdf --bench <file.pdf>";
+const USAGE: &str = "usage: tpdf <file.pdf> [page]\n       tpdf context [--pid <pid>] [--png <file.png>]\n       tpdf --bench <file.pdf>";
 const BENCH_WIDTH: f32 = 1400.0;
 
 fn view(path: PathBuf, page: usize) -> Result<(), String> {
@@ -28,6 +29,7 @@ fn view(path: PathBuf, page: usize) -> Result<(), String> {
     }
     let guard = term::enter()?;
     let mut app = App::new(path, doc, page, tmux);
+    app.publish();
     app.run();
     app.shutdown();
     drop(guard);
@@ -78,9 +80,29 @@ fn bench(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn run_context(mut args: &[OsString]) -> Result<(), String> {
+    let mut pid = None;
+    let mut png = None;
+    while let [flag, value, rest @ ..] = args {
+        if flag == "--pid" {
+            pid = Some(value.to_str().and_then(|text| text.parse().ok()).ok_or(USAGE)?);
+        } else if flag == "--png" {
+            png = Some(PathBuf::from(value));
+        } else {
+            return Err(USAGE.to_string());
+        }
+        args = rest;
+    }
+    if !args.is_empty() {
+        return Err(USAGE.to_string());
+    }
+    context::run(pid, png)
+}
+
 fn main() -> ExitCode {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
     let result = match args.as_slice() {
+        [command, rest @ ..] if command == "context" => run_context(rest),
         [flag, path] if flag == "--bench" => bench(Path::new(path)),
         [path] => view(PathBuf::from(path), 0),
         [path, page] => match page.to_str().and_then(|text| text.parse::<usize>().ok()) {

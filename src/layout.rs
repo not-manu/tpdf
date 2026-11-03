@@ -1,8 +1,17 @@
+use std::ops::Range;
+
 use crate::kitty::MAX_GRID;
 
 pub const TILE_COLS: i64 = MAX_GRID;
 pub const TILE_ROWS: i64 = 32;
 const PAGE_GAP: i64 = 1;
+
+#[derive(Debug, PartialEq)]
+pub struct Span {
+    pub page: usize,
+    pub rows: Range<i64>,
+    pub cols: Range<i64>,
+}
 
 pub struct Layout {
     pub tops: Vec<i64>,
@@ -37,6 +46,26 @@ impl Layout {
 
     pub fn page_at(&self, row: i64) -> usize {
         self.tops.partition_point(|&top| top <= row).saturating_sub(1)
+    }
+
+    pub fn spans(&self, from: i64, to: i64, scroll_col: i64, view_cols: i64) -> Vec<Span> {
+        let (from, to) = (from.max(0), to.min(self.total_rows));
+        let mut spans = Vec::new();
+        if from >= to {
+            return spans;
+        }
+        let mut page = self.page_at(from);
+        while page < self.tops.len() && self.tops[page] < to {
+            let top = self.tops[page];
+            let left = self.lefts[page] - scroll_col;
+            let rows = (from - top).max(0)..(to - top).min(self.rows[page]);
+            let cols = (-left).max(0)..(view_cols - left).min(self.cols[page]);
+            if !rows.is_empty() && !cols.is_empty() {
+                spans.push(Span { page, rows, cols });
+            }
+            page += 1;
+        }
+        spans
     }
 }
 
@@ -76,6 +105,33 @@ mod tests {
         let scale = 620.0 / 792.0;
         let layout = Layout::new(&[(612.0, 792.0)], scale, (16, 31), 100);
         assert_eq!(layout.rows, [20]);
+    }
+
+    #[test]
+    fn spans_cover_each_visible_page_and_skip_gaps() {
+        let layout = layout();
+        let spans = layout.spans(15, 25, 0, 40);
+        assert_eq!(
+            spans,
+            [
+                Span { page: 0, rows: 15..20, cols: 0..20 },
+                Span { page: 1, rows: 0..4, cols: 0..40 },
+            ]
+        );
+    }
+
+    #[test]
+    fn spans_clip_to_the_view_when_scrolled_sideways() {
+        let layout = layout();
+        let spans = layout.spans(21, 22, 10, 15);
+        assert_eq!(spans, [Span { page: 1, rows: 0..1, cols: 10..25 }]);
+    }
+
+    #[test]
+    fn spans_outside_the_document_are_empty() {
+        let layout = layout();
+        assert!(layout.spans(100, 110, 0, 40).is_empty());
+        assert!(layout.spans(20, 21, 0, 40).is_empty());
     }
 
     #[test]

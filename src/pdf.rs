@@ -42,6 +42,15 @@ unsafe extern "C" {
         out: *mut f32,
         max: c_int,
     ) -> c_int;
+    fn tpdf_text(handle: *mut Handle, index: c_int, x0: f32, y0: f32, x1: f32, y1: f32) -> *mut c_char;
+    fn tpdf_free_text(handle: *mut Handle, text: *mut c_char);
+    fn tpdf_save_png(
+        handle: *mut Handle,
+        path: *const c_char,
+        width: c_int,
+        height: c_int,
+        rgb: *mut u8,
+    ) -> c_int;
 }
 
 pub struct Doc {
@@ -94,6 +103,35 @@ impl Doc {
                 dark as c_int,
                 TEXT_ON_DARK,
                 PAPER_ON_DARK,
+            )
+        };
+        ok != 0
+    }
+
+    pub fn text(&self, index: usize, area: [f32; 4]) -> String {
+        unsafe {
+            let raw = tpdf_text(self.handle, index as c_int, area[0], area[1], area[2], area[3]);
+            if raw.is_null() {
+                return String::new();
+            }
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            tpdf_free_text(self.handle, raw);
+            text
+        }
+    }
+
+    pub fn save_png(&self, path: &Path, width: usize, height: usize, rgb: &mut [u8]) -> bool {
+        assert_eq!(rgb.len(), width * height * 3);
+        let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+            return false;
+        };
+        let ok = unsafe {
+            tpdf_save_png(
+                self.handle,
+                c_path.as_ptr(),
+                width as c_int,
+                height as c_int,
+                rgb.as_mut_ptr(),
             )
         };
         ok != 0

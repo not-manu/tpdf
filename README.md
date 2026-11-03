@@ -39,6 +39,12 @@ rebuild after `brew upgrade mupdf`. tpdf tells you when it's needed.
 
 counts work on motions, like `5j` or `3J`. the file reloads itself when it changes.
 
+## agents
+
+`tpdf context --png view.png` prints JSON describing the open reader: the file, page, visible region, and text. it also writes a picture of what's on screen. with several readers open it picks the one nearest the caller: same tmux window, then same session, then on screen, then most recently moved. use `--pid` to pick one yourself.
+
+readers publish to `~/.local/state/tpdf/<pid>.json` when the view settles and remove the file on quit. the [`tpdf-reading`](skills/tpdf-reading/SKILL.md) skill tells agents how to use this.
+
 ## how it stays fast in tmux
 
 - pages are drawn with [unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders), so tmux sees ordinary text cells and handles positioning, splits, and window switches.

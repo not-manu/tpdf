@@ -12,7 +12,7 @@ cargo install --path .
 
 `tpdf <file.pdf> [page]`
 
-each file reopens where you left it, at the same zoom. pass a page to open there instead.
+each file reopens where you left it, at the same zoom. pass a page to open there instead. dark mode is remembered across all files.
 
 rebuild after `brew upgrade mupdf`. tpdf tells you when it's needed.
 

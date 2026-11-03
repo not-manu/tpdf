@@ -12,6 +12,7 @@ use crate::kitty::{self, Graphics, Image};
 use crate::layout::{Layout, TILE_COLS, TILE_ROWS};
 use crate::pdf::{self, Doc};
 use crate::position::{Fit, Position, Positions};
+use crate::preferences::Preferences;
 use crate::term::{self, RESIZED, STOP, Size};
 
 const IMAGE_BUDGET: usize = 64 << 20;
@@ -175,7 +176,7 @@ impl App {
             layout,
             scroll_row: 0,
             scroll_col: 0,
-            dark: false,
+            dark: Preferences::load().dark,
             graphics: Graphics::new(tmux),
             tiles: HashMap::new(),
             free_ids: (FIRST_IMAGE_ID..=u8::MAX).rev().collect(),
@@ -427,6 +428,7 @@ impl App {
             }
             Key::Char('z') => {
                 self.dark = !self.dark;
+                Preferences { dark: self.dark }.save();
                 self.clear_tiles();
                 self.touch();
             }

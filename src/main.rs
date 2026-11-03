@@ -5,6 +5,7 @@ mod kitty;
 mod layout;
 mod pdf;
 mod position;
+mod preferences;
 mod store;
 mod term;
 

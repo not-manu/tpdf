@@ -49,7 +49,7 @@ counts work on motions, like `5j` or `3J`. the file reloads itself when it chang
 
 `tpdf context --png view.png` prints JSON describing the open reader: the file, page, visible region, and text. it also writes a picture of what's on screen. with several readers open it picks the one nearest the caller: same tmux window, then same session, then on screen, then most recently moved. use `--pid` to pick one yourself.
 
-readers publish to `~/.local/state/tpdf/readers/<pid>.json` when the view settles and remove the file on quit. the [`tpdf-reading`](skills/tpdf-reading/SKILL.md) skill tells agents how to use this.
+readers publish to `~/.local/state/tpdf/readers/<pid>.json` when the view settles and remove the file on quit.
 
 ## how it stays fast in tmux
 

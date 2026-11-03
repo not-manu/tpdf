@@ -87,8 +87,11 @@ pub fn in_tmux() -> bool {
 }
 
 pub fn allow_passthrough() {
+    let Ok(pane) = env::var("TMUX_PANE") else {
+        return;
+    };
     let _ = Command::new("tmux")
-        .args(["set-option", "-p", "allow-passthrough", "all"])
+        .args(["set-option", "-p", "-t", &pane, "allow-passthrough", "all"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

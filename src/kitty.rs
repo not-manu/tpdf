@@ -17,6 +17,7 @@ const DIACRITICS: [char; 64] = [
 ];
 
 pub const MAX_GRID: i64 = DIACRITICS.len() as i64;
+const FRAME_MARKER_ID: u8 = 1;
 
 pub struct Image<'a> {
     pub id: u8,
@@ -61,6 +62,19 @@ impl Graphics {
         base64(&mut command, image.name.to_bytes());
         command.extend_from_slice(b"\x1b\\");
         self.send(out, &command);
+    }
+
+    pub fn frame_marker(&mut self, out: &mut Vec<u8>) -> Option<CString> {
+        let name = self.shared(3).ok()?.into_name();
+        let mut command = format!("\x1b_Ga=t,q=2,f=24,t=s,i={FRAME_MARKER_ID},s=1,v=1,S=3;").into_bytes();
+        base64(&mut command, name.to_bytes());
+        command.extend_from_slice(b"\x1b\\");
+        self.send(out, &command);
+        Some(name)
+    }
+
+    pub fn delete_frame_marker(&self, out: &mut Vec<u8>) {
+        self.delete(out, FRAME_MARKER_ID);
     }
 
     pub fn delete(&self, out: &mut Vec<u8>, id: u8) {
@@ -134,6 +148,17 @@ impl Drop for Shared {
         unsafe {
             libc::munmap(self.pointer.cast(), self.len);
         }
+    }
+}
+
+pub fn still_unread(name: &CStr) -> bool {
+    unsafe {
+        let fd = libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0 as libc::c_uint);
+        if fd < 0 {
+            return false;
+        }
+        libc::close(fd);
+        true
     }
 }
 

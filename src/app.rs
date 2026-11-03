@@ -28,6 +28,8 @@ const MAX_ZOOM: f32 = 16.0;
 const RELOAD_INTERVAL: Duration = Duration::from_millis(500);
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const ROWS_BETWEEN_DISCARD_MARKS: i64 = 16;
+const TERMINAL_TIMEOUT: Duration = Duration::from_millis(250);
+const TERMINAL_POLL_MS: i32 = 2;
 const HIGHLIGHT: [u16; 3] = [0xD0, 0xA2, 0x15];
 
 type TileKey = (usize, i64, i64);
@@ -93,6 +95,7 @@ pub struct App {
     published_path: String,
     positions: Positions,
     jumps: Jumps,
+    frame_in_flight: Option<(CString, Instant)>,
 }
 
 fn page_sizes(doc: &Doc) -> Vec<(f32, f32)> {
@@ -166,6 +169,7 @@ impl App {
             published_path,
             positions,
             jumps: Jumps::default(),
+            frame_in_flight: None,
             modified: modified(&path),
             path,
             doc,
@@ -293,6 +297,8 @@ impl App {
             }
             if term::readable(0) {
                 self.read_keys(&mut buffer);
+            } else if !self.terminal_caught_up() {
+                term::readable(TERMINAL_POLL_MS);
             } else if self.dirty {
                 let wait = FRAME_INTERVAL.saturating_sub(self.last_frame.elapsed());
                 if wait.is_zero() {
@@ -316,6 +322,25 @@ impl App {
                 last_check = Instant::now();
             }
         }
+    }
+
+    fn terminal_caught_up(&mut self) -> bool {
+        let Some((name, sent)) = &self.frame_in_flight else {
+            return true;
+        };
+        if kitty::still_unread(name) && sent.elapsed() < TERMINAL_TIMEOUT {
+            return false;
+        }
+        kitty::unlink(name);
+        self.frame_in_flight = None;
+        true
+    }
+
+    fn send_frame(&mut self, mut frame: Vec<u8>) {
+        if let Some(name) = self.graphics.frame_marker(&mut frame) {
+            self.frame_in_flight = Some((name, Instant::now()));
+        }
+        term::write_all(&frame);
     }
 
     fn recover_discarded_images(&mut self) {
@@ -368,6 +393,10 @@ impl App {
     pub fn shutdown(&mut self) {
         self.save_position();
         self.publisher.remove();
+        if let Some((name, _)) = self.frame_in_flight.take() {
+            kitty::unlink(&name);
+        }
+        self.graphics.delete_frame_marker(&mut self.out);
         self.clear_tiles();
         term::write_all(&self.out);
         self.out.clear();
@@ -805,8 +834,8 @@ impl App {
             return false;
         }
         let ensured = self.ensure(key, &keep);
-        term::write_all(&self.out);
-        self.out.clear();
+        let frame = std::mem::take(&mut self.out);
+        self.send_frame(frame);
         ensured
     }
 
@@ -934,7 +963,7 @@ impl App {
             }
         }
         frame.extend_from_slice(b"\x1b[?2026l");
-        term::write_all(&frame);
+        self.send_frame(frame);
         self.dirty = false;
         self.drew_since_check = true;
         self.last_frame = Instant::now();

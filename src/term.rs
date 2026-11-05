@@ -1,7 +1,7 @@
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{env, mem, panic};
+use std::{env, mem, panic, thread};
 
 pub static RESIZED: AtomicBool = AtomicBool::new(false);
 pub static STOP: AtomicBool = AtomicBool::new(false);
@@ -10,6 +10,7 @@ static SAVED: OnceLock<libc::termios> = OnceLock::new();
 const ENTER: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[2J";
 const LEAVE: &[u8] = b"\x1b[0m\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l";
 const FALLBACK_CELL: (i64, i64) = (10, 20);
+const OPENER: &str = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Size {
@@ -96,6 +97,19 @@ pub fn allow_passthrough() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+pub fn open_externally(uri: &str) -> bool {
+    Command::new(OPENER)
+        .arg(uri)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|mut child| {
+            thread::spawn(move || child.wait());
+        })
+        .is_ok()
 }
 
 fn tmux_format(format: &str) -> Option<String> {

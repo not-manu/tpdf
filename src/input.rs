@@ -15,6 +15,7 @@ pub enum Key {
     End,
     WheelUp,
     WheelDown,
+    Click { row: i64, col: i64 },
 }
 
 pub fn parse(bytes: &[u8]) -> Vec<Key> {
@@ -83,10 +84,18 @@ fn parse_escape(bytes: &[u8], keys: &mut Vec<Key>) -> usize {
 
 fn parse_csi(parameters: &[u8], last: u8) -> Option<Key> {
     if let Some(mouse) = parameters.strip_prefix(b"<") {
-        let button = mouse.split(|&byte| byte == b';').next()?;
+        let mut fields = mouse.split(|&byte| byte == b';');
+        let button = fields.next()?;
+        let mut position = || -> Option<i64> {
+            Some(std::str::from_utf8(fields.next()?).ok()?.parse::<i64>().ok()? - 1)
+        };
         return match (button, last) {
             (b"64", b'M') => Some(Key::WheelUp),
             (b"65", b'M') => Some(Key::WheelDown),
+            (b"0", b'M') => {
+                let col = position()?;
+                Some(Key::Click { row: position()?, col })
+            }
             _ => None,
         };
     }
@@ -135,7 +144,17 @@ mod tests {
     #[test]
     fn wheel_is_reported_and_other_mouse_events_are_ignored() {
         assert_eq!(parse(b"\x1b[<64;10;10M\x1b[<65;10;10M"), [Key::WheelUp, Key::WheelDown]);
-        assert_eq!(parse(b"\x1b[<0;10;10M\x1b[<0;10;10m"), []);
+        assert_eq!(parse(b"\x1b[<0;10;10m\x1b[<2;10;10M\x1b[<4;10;10M"), []);
+    }
+
+    #[test]
+    fn a_left_press_is_a_click_at_a_zero_based_cell() {
+        assert_eq!(parse(b"\x1b[<0;12;34M"), [Key::Click { row: 33, col: 11 }]);
+    }
+
+    #[test]
+    fn a_click_with_a_bad_position_is_dropped() {
+        assert_eq!(parse(b"\x1b[<0;12M\x1b[<0;;34M"), []);
     }
 
     #[test]

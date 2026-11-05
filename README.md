@@ -30,6 +30,7 @@ rebuild after `brew upgrade mupdf`. tpdf tells you when it's needed.
 | `gg` `G` | first page / end |
 | `12G` `12gg` `:12` | page 12, counting from the start of the file |
 | `:p12` | the page the pdf labels 12, usually its printed number |
+| click | follow a link |
 | `ctrl-o` `ctrl-i` | back / forward through places you jumped from |
 | `=` `-` | zoom |
 | `+` `_` | zoom faster |
@@ -49,6 +50,8 @@ counts work on motions, like `5j` or `3J`. the file reloads itself when it chang
 search jumps as you type. `enter` keeps the match, and `esc` puts you back where you started.
 
 `p` matches the pdf's page labels exactly, so `:pxii` works too. a pdf with no labels counts from 1, the same as `:12`. when a page's label differs from its position, the status bar shows both, like `p460  472/1007`.
+
+links inside the pdf jump there, and `ctrl-o` comes back. `http`, `https` and `mailto` links open in your default app. tpdf won't open any other kind, since a pdf can point them at anything on your machine.
 
 ## agents
 

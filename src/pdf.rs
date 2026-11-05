@@ -46,6 +46,17 @@ unsafe extern "C" {
     ) -> c_int;
     fn tpdf_text(handle: *mut Handle, index: c_int, x0: f32, y0: f32, x1: f32, y1: f32) -> *mut c_char;
     fn tpdf_free_text(handle: *mut Handle, text: *mut c_char);
+    fn tpdf_link_at(
+        handle: *mut Handle,
+        index: c_int,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        uri: *mut *mut c_char,
+        target: *mut c_int,
+        target_y: *mut f32,
+    );
     fn tpdf_fold(handle: *mut Handle, text: *const c_char) -> *mut c_char;
     fn tpdf_folded_page(handle: *mut Handle, index: c_int) -> *mut c_char;
     fn tpdf_save_png(
@@ -66,6 +77,12 @@ pub struct Tile {
     pub y: i32,
     pub width: i32,
     pub height: i32,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Link {
+    Internal { page: usize, y: f32 },
+    External(String),
 }
 
 impl Doc {
@@ -153,6 +170,30 @@ impl Doc {
         self.take_text(unsafe { tpdf_folded_page(self.handle, index as c_int) })
     }
 
+    pub fn link_at(&self, index: usize, area: [f32; 4]) -> Option<Link> {
+        let mut uri = std::ptr::null_mut();
+        let (mut page, mut y) = (-1, 0.0);
+        unsafe {
+            tpdf_link_at(
+                self.handle,
+                index as c_int,
+                area[0],
+                area[1],
+                area[2],
+                area[3],
+                &mut uri,
+                &mut page,
+                &mut y,
+            );
+            if !uri.is_null() {
+                let text = CStr::from_ptr(uri).to_string_lossy().into_owned();
+                tpdf_free_text(self.handle, uri);
+                return Some(Link::External(text));
+            }
+        }
+        (page >= 0).then_some(Link::Internal { page: page as usize, y })
+    }
+
     pub fn save_png(&self, path: &Path, width: usize, height: usize, rgb: &mut [u8]) -> bool {
         assert_eq!(rgb.len(), width * height * 3);
         let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
@@ -203,14 +244,66 @@ mod tests {
     use std::fs;
 
     const PAGE: &str = "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]>>";
+    const LINKS: &str = "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Annots[\
+        <</Type/Annot/Subtype/Link/Rect[0 80 40 100]/A<</S/URI/URI(https://example.com/a)>>>>\
+        <</Type/Annot/Subtype/Link/Rect[60 80 100 100]/Dest[4 0 R/XYZ 0 75 0]>>\
+        <</Type/Annot/Subtype/Link/Rect[60 0 100 20]/Dest[5 0 R/Fit]>>\
+        ]>>";
 
-    fn open(name: &str, labels: &str) -> Doc {
+    fn open_with(name: &str, labels: &str, first_page: &str) -> Doc {
         let pdf = format!(
-            "%PDF-1.7\n1 0 obj\n<</Type/Catalog/Pages 2 0 R{labels}>>\nendobj\n2 0 obj\n<</Type/Pages/Count 3/Kids[3 0 R 4 0 R 5 0 R]>>\nendobj\n3 0 obj\n{PAGE}\nendobj\n4 0 obj\n{PAGE}\nendobj\n5 0 obj\n{PAGE}\nendobj\ntrailer\n<</Root 1 0 R>>\n"
+            "%PDF-1.7\n1 0 obj\n<</Type/Catalog/Pages 2 0 R{labels}>>\nendobj\n2 0 obj\n<</Type/Pages/Count 3/Kids[3 0 R 4 0 R 5 0 R]>>\nendobj\n3 0 obj\n{first_page}\nendobj\n4 0 obj\n{PAGE}\nendobj\n5 0 obj\n{PAGE}\nendobj\ntrailer\n<</Root 1 0 R>>\n"
         );
         let path = Path::new(env!("OUT_DIR")).join(name);
         fs::write(&path, pdf).unwrap();
         Doc::open(&path).unwrap()
+    }
+
+    fn open(name: &str, labels: &str) -> Doc {
+        open_with(name, labels, PAGE)
+    }
+
+    #[test]
+    fn a_web_link_comes_back_as_its_address() {
+        let doc = open_with("web-link.pdf", "", LINKS);
+        assert_eq!(
+            doc.link_at(0, [10.0, 5.0, 12.0, 7.0]),
+            Some(Link::External("https://example.com/a".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_internal_link_gives_the_page_and_height_it_lands_on() {
+        let doc = open_with("internal-link.pdf", "", LINKS);
+        assert_eq!(
+            doc.link_at(0, [70.0, 5.0, 72.0, 7.0]),
+            Some(Link::Internal { page: 1, y: 25.0 })
+        );
+    }
+
+    #[test]
+    fn an_internal_link_with_no_height_lands_at_the_top() {
+        let doc = open_with("fit-link.pdf", "", LINKS);
+        assert_eq!(
+            doc.link_at(0, [70.0, 90.0, 72.0, 92.0]),
+            Some(Link::Internal { page: 2, y: 0.0 })
+        );
+    }
+
+    #[test]
+    fn a_cell_that_only_touches_a_link_still_counts() {
+        let doc = open_with("touching-link.pdf", "", LINKS);
+        assert!(matches!(
+            doc.link_at(0, [39.0, 5.0, 45.0, 7.0]),
+            Some(Link::External(_))
+        ));
+    }
+
+    #[test]
+    fn a_click_away_from_any_link_finds_nothing() {
+        let doc = open_with("no-link.pdf", "", LINKS);
+        assert_eq!(doc.link_at(0, [50.0, 50.0, 52.0, 52.0]), None);
+        assert_eq!(doc.link_at(1, [10.0, 5.0, 12.0, 7.0]), None);
     }
 
     #[test]

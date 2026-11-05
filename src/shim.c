@@ -1,5 +1,6 @@
 #include <mupdf/fitz.h>
 #include <mupdf/ucdn.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -112,6 +113,55 @@ int tpdf_label(tpdf *t, int index, char *label, int size)
         ok = 0;
     }
     return ok;
+}
+
+void tpdf_link_at(tpdf *t, int index, float x0, float y0, float x1, float y1,
+                  char **uri, int *target, float *target_y)
+{
+    fz_context *ctx = t->ctx;
+    fz_page *page = NULL;
+    fz_page *landing = NULL;
+    fz_link *links = NULL;
+    fz_var(page);
+    fz_var(landing);
+    fz_var(links);
+    fz_try(ctx) {
+        page = fz_load_page(ctx, t->doc, index);
+        fz_rect bounds = fz_bound_page(ctx, page);
+        fz_rect cell = fz_make_rect(x0 + bounds.x0, y0 + bounds.y0, x1 + bounds.x0, y1 + bounds.y0);
+        links = fz_load_links(ctx, page);
+        fz_link *hit = NULL;
+        float most = 0;
+        for (fz_link *link = links; link; link = link->next) {
+            fz_rect overlap = fz_intersect_rect(link->rect, cell);
+            float area = fz_is_empty_rect(overlap)
+                ? 0
+                : (overlap.x1 - overlap.x0) * (overlap.y1 - overlap.y0);
+            if (area > most) {
+                most = area;
+                hit = link;
+            }
+        }
+        if (hit && fz_is_external_link(ctx, hit->uri)) {
+            *uri = fz_strdup(ctx, hit->uri);
+        } else if (hit) {
+            float y = NAN;
+            fz_location location = fz_resolve_link(ctx, t->doc, hit->uri, NULL, &y);
+            int number = fz_page_number_from_location(ctx, t->doc, location);
+            if (number >= 0) {
+                landing = fz_load_page(ctx, t->doc, number);
+                *target_y = isfinite(y) ? y - fz_bound_page(ctx, landing).y0 : 0;
+                *target = number;
+            }
+        }
+    }
+    fz_always(ctx) {
+        fz_drop_link(ctx, links);
+        fz_drop_page(ctx, landing);
+        fz_drop_page(ctx, page);
+    }
+    fz_catch(ctx)
+        fz_ignore_error(ctx);
 }
 
 static cached_list *load_list(tpdf *t, int index)

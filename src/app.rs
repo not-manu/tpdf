@@ -12,7 +12,7 @@ use crate::input::{self, Key};
 use crate::jumps::{Jumps, Place};
 use crate::kitty::{self, Graphics, Image, Namespace};
 use crate::layout::{Layout, TILE_COLS, TILE_ROWS};
-use crate::pdf::{self, Doc};
+use crate::pdf::{self, Doc, Link};
 use crate::position::{Fit, Position, Positions};
 use crate::preferences::Preferences;
 use crate::term::{self, RESIZED, STOP, Size};
@@ -32,6 +32,7 @@ const ROWS_BETWEEN_DISCARD_MARKS: i64 = 16;
 const TERMINAL_TIMEOUT: Duration = Duration::from_millis(250);
 const TERMINAL_POLL_MS: i32 = 2;
 const HIGHLIGHT: [u16; 3] = [0xD0, 0xA2, 0x15];
+const OPENABLE_SCHEMES: [&str; 3] = ["http://", "https://", "mailto:"];
 
 type TileKey = (usize, i64, i64);
 
@@ -576,6 +577,7 @@ impl App {
             Key::Char('l') | Key::Right => self.scroll_by(0, COLUMN_STEP * times),
             Key::WheelDown => self.scroll_by(LINE_STEP, 0),
             Key::WheelUp => self.scroll_by(-LINE_STEP, 0),
+            Key::Click { row, col } => self.click(row, col),
             Key::Ctrl('d') => self.scroll_by(half * times, 0),
             Key::Ctrl('u') => self.scroll_by(-half * times, 0),
             Key::Ctrl('f') | Key::PageDown | Key::Char(' ') => self.scroll_by(full * times, 0),
@@ -625,6 +627,45 @@ impl App {
             Key::Char('q') | Key::Ctrl('c') => self.quit = true,
             _ => {}
         }
+    }
+
+    fn click(&mut self, row: i64, col: i64) {
+        if row >= self.view_rows {
+            return;
+        }
+        let doc_row = self.scroll_row - self.voffset() + row;
+        let Some((page, page_row, page_col)) = self.layout.locate(doc_row, self.scroll_col + col) else {
+            return;
+        };
+        let (cell_w, cell_h) = self.size.cell;
+        let area = [
+            (page_col * cell_w) as f32 / self.scale,
+            (page_row * cell_h) as f32 / self.scale,
+            ((page_col + 1) * cell_w) as f32 / self.scale,
+            ((page_row + 1) * cell_h) as f32 / self.scale,
+        ];
+        match self.doc.link_at(page, area) {
+            Some(Link::Internal { page, y }) => self.follow_internal(page, y),
+            Some(Link::External(uri)) => self.follow_external(&uri),
+            None => {}
+        }
+    }
+
+    fn follow_internal(&mut self, page: usize, y: f32) {
+        self.mark_jump();
+        let whole_page = self.layout.rows[page] <= self.view_rows;
+        let within = if whole_page { 0.0 } else { y / self.sizes[page].1 };
+        self.go_to_place(Place { page, within, across: self.place().across });
+    }
+
+    fn follow_external(&mut self, uri: &str) {
+        self.message = if !OPENABLE_SCHEMES.iter().any(|scheme| uri.starts_with(scheme)) {
+            format!("won't open: {uri}")
+        } else if term::open_externally(uri) {
+            format!("opened: {uri}")
+        } else {
+            format!("could not open: {uri}")
+        };
     }
 
     fn run_command(&mut self, command: &str) {

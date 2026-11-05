@@ -48,6 +48,13 @@ impl Layout {
         self.tops.partition_point(|&top| top <= row).saturating_sub(1)
     }
 
+    pub fn locate(&self, row: i64, col: i64) -> Option<(usize, i64, i64)> {
+        let page = self.page_at(row);
+        let (page_row, page_col) = (row - self.tops[page], col - self.lefts[page]);
+        let inside = (0..self.rows[page]).contains(&page_row) && (0..self.cols[page]).contains(&page_col);
+        inside.then_some((page, page_row, page_col))
+    }
+
     pub fn spans(&self, from: i64, to: i64, scroll_col: i64, view_cols: i64) -> Vec<Span> {
         let (from, to) = (from.max(0), to.min(self.total_rows));
         let mut spans = Vec::new();
@@ -132,6 +139,23 @@ mod tests {
         let layout = layout();
         assert!(layout.spans(100, 110, 0, 40).is_empty());
         assert!(layout.spans(20, 21, 0, 40).is_empty());
+    }
+
+    #[test]
+    fn locate_gives_the_cell_within_its_page() {
+        let layout = layout();
+        assert_eq!(layout.locate(5, 15), Some((0, 5, 5)));
+        assert_eq!(layout.locate(22, 3), Some((1, 1, 3)));
+    }
+
+    #[test]
+    fn locate_finds_nothing_off_the_page() {
+        let layout = layout();
+        assert_eq!(layout.locate(-1, 15), None);
+        assert_eq!(layout.locate(20, 15), None);
+        assert_eq!(layout.locate(5, 9), None);
+        assert_eq!(layout.locate(5, 30), None);
+        assert_eq!(layout.locate(100, 3), None);
     }
 
     #[test]
